@@ -207,14 +207,33 @@
       ctx.restore()
     }
 
-    // Lane lines (from model data)
-    if (modelData?.laneLines) {
-      drawLaneLines(ctx, w, h, modelData.laneLines, modelData.laneLineProbs)
+    // Road edges (from pre-projected polygons)
+    if (modelData?.roadEdges) {
+      for (let i = 0; i < modelData.roadEdges.length; i++) {
+        const alpha = Math.max(0, Math.min(1, 1.0 - (modelData.roadEdgeStds?.[i] ?? 1.0)))
+        if (alpha > 0.05) {
+          drawPolygon(ctx, w, h, modelData.roadEdges[i], `rgba(255, 0, 0, ${alpha})`)
+        }
+      }
     }
 
-    // Path prediction
+    // Lane lines (from pre-projected polygons)
+    if (modelData?.laneLines) {
+      for (let i = 0; i < modelData.laneLines.length && i < 4; i++) {
+        const prob = modelData.laneLineProbs?.[i] ?? 0
+        const alpha = Math.max(0, Math.min(0.7, prob))
+        if (alpha > 0.05) {
+          drawPolygon(ctx, w, h, modelData.laneLines[i], `rgba(255, 255, 255, ${alpha})`)
+        }
+      }
+    }
+
+    // Path prediction (pre-projected polygon)
     if (modelData?.path) {
-      drawPath(ctx, w, h, modelData.path, engaged)
+      const color = engaged
+        ? 'rgba(13, 248, 122, 0.4)'   // green when engaged (stock throttle color)
+        : 'rgba(242, 242, 242, 0.35)'  // white when disengaged
+      drawPolygon(ctx, w, h, modelData.path, color)
     }
 
     // Lead car indicator
@@ -223,87 +242,58 @@
     }
   }
 
-  // Draw lane lines projected onto canvas
-  function drawLaneLines(ctx, w, h, lines, probs) {
-    const colors = [
-      'rgba(255, 255, 255, 0.6)',   // left outer
-      'rgba(255, 200, 50, 0.8)',    // left inner
-      'rgba(255, 200, 50, 0.8)',    // right inner
-      'rgba(255, 255, 255, 0.6)',   // right outer
-    ]
-
-    for (let i = 0; i < lines.length && i < 4; i++) {
-      const line = lines[i]
-      const prob = probs?.[i] ?? 1.0
-      if (prob < 0.3 || !line || line.length < 2) continue
-
-      ctx.save()
-      ctx.strokeStyle = colors[i]
-      ctx.lineWidth = Math.max(2, w * 0.003)
-      ctx.globalAlpha = prob
-      ctx.beginPath()
-
-      for (let j = 0; j < line.length; j++) {
-        const pt = line[j]
-        // pt = {x, y} in canvas-normalized coords (0-1)
-        const cx = pt.x * w
-        const cy = pt.y * h
-        if (j === 0) ctx.moveTo(cx, cy)
-        else ctx.lineTo(cx, cy)
-      }
-      ctx.stroke()
-      ctx.restore()
-    }
-  }
-
-  // Draw predicted path
-  function drawPath(ctx, w, h, path, engaged) {
-    if (!path || path.length < 2) return
-
+  // Draw a pre-projected polygon (points in normalized 0-1 coords)
+  function drawPolygon(ctx, w, h, points, color) {
+    if (!points || points.length < 3) return
     ctx.save()
-    const color = engaged ? 'rgba(23, 200, 84, 0.4)' : 'rgba(100, 149, 237, 0.3)'
-
     ctx.fillStyle = color
     ctx.beginPath()
-
-    // Draw as filled polygon (left edge forward, right edge backward)
-    const leftEdge = path.map(p => ({ x: (p.x - p.width * 0.5) * w, y: p.y * h }))
-    const rightEdge = path.map(p => ({ x: (p.x + p.width * 0.5) * w, y: p.y * h }))
-
-    ctx.moveTo(leftEdge[0].x, leftEdge[0].y)
-    for (const p of leftEdge) ctx.lineTo(p.x, p.y)
-    for (let i = rightEdge.length - 1; i >= 0; i--) ctx.lineTo(rightEdge[i].x, rightEdge[i].y)
+    ctx.moveTo(points[0][0] * w, points[0][1] * h)
+    for (let i = 1; i < points.length; i++) {
+      ctx.lineTo(points[i][0] * w, points[i][1] * h)
+    }
     ctx.closePath()
     ctx.fill()
     ctx.restore()
   }
 
-  // Draw lead car indicator
+  // Draw lead car chevron (stock algorithm: glow + filled chevron)
   function drawLead(ctx, w, h, lead) {
-    if (!lead || lead.dRel <= 0) return
+    if (!lead?.pt) return
+    const px = lead.pt[0] * w
+    const py = lead.pt[1] * h
+    const d = lead.dRel
 
+    // Size decreases with distance (same formula as stock)
+    const sz = Math.max(15, Math.min(30, (25 * 30) / (d / 3 + 30))) * 2.35
+
+    // Fill alpha increases when close or closing
+    let fillAlpha = 0
+    if (d < 40) {
+      fillAlpha = 255 * (1.0 - d / 40)
+      if (lead.vRel < 0) fillAlpha += 255 * (-lead.vRel / 10)
+      fillAlpha = Math.min(255, Math.max(0, fillAlpha))
+    }
+
+    // Glow triangle (yellow)
+    const gxo = sz / 5, gyo = sz / 10
     ctx.save()
-    // Chevron at lead car position
-    const cx = (lead.x ?? 0.5) * w
-    const cy = (lead.y ?? 0.35) * h
-    const size = Math.max(10, w * 0.03)
-
-    ctx.strokeStyle = lead.dRel < 15 ? 'rgba(255, 59, 48, 0.9)' : 'rgba(23, 200, 84, 0.9)'
-    ctx.lineWidth = Math.max(2, w * 0.004)
-    ctx.lineCap = 'round'
-    ctx.lineJoin = 'round'
-
+    ctx.fillStyle = 'rgba(218, 202, 37, 1.0)'
     ctx.beginPath()
-    ctx.moveTo(cx - size, cy + size * 0.5)
-    ctx.lineTo(cx, cy - size * 0.5)
-    ctx.lineTo(cx + size, cy + size * 0.5)
-    ctx.stroke()
+    ctx.moveTo(px + sz * 1.35 + gxo, py + sz + gyo)
+    ctx.lineTo(px, py - gyo)
+    ctx.lineTo(px - sz * 1.35 - gxo, py + sz + gyo)
+    ctx.closePath()
+    ctx.fill()
 
-    // Distance text
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.8)'
-    ctx.font = `${Math.round(h * 0.03)}px system-ui, -apple-system, sans-serif`
-    ctx.textAlign = 'center'
-    ctx.fillText(`${Math.round(lead.dRel)}m`, cx, cy + size)
+    // Chevron triangle (red, alpha based on proximity)
+    ctx.fillStyle = `rgba(201, 34, 49, ${fillAlpha / 255})`
+    ctx.beginPath()
+    ctx.moveTo(px + sz * 1.25, py + sz)
+    ctx.lineTo(px, py)
+    ctx.lineTo(px - sz * 1.25, py + sz)
+    ctx.closePath()
+    ctx.fill()
     ctx.restore()
   }
 
