@@ -231,6 +231,19 @@ export async function hudStreamOffer(sdp) {
   return res.json()
 }
 
+// ── Live driving WebRTC ──────────────────────────────────────
+
+/** Exchange SDP offer with webrtcd for live camera stream */
+export async function liveStreamOffer(sdp, cameras = ['road']) {
+  const res = await fetch('/api/webrtc', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sdp, cameras }),
+  })
+  if (!res.ok) throw new Error(`liveStreamOffer: ${res.status}`)
+  return res.json()
+}
+
 // ── Connectdata URL builders ────────────────────────────────
 
 /** Build /connectdata/... URL for media files */

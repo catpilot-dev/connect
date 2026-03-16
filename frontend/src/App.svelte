@@ -12,6 +12,7 @@
   import SignalBrowserPage from './lib/pages/SignalBrowserPage.svelte'
   import PluginsPage from './lib/pages/PluginsPage.svelte'
   import ScreenshotsPage from './lib/pages/ScreenshotsPage.svelte'
+  import DrivingPage from './lib/pages/DrivingPage.svelte'
 
   let error = $state(null)
   let isOnroad = $state(false)
@@ -23,6 +24,7 @@
     if (parts[0] === 'settings') return 'settings'
     if (parts[0] === 'plugins') return 'plugins'
     if (parts[0] === 'screenshots') return 'screenshots'
+    if (parts[0] === 'driving') return 'driving'
     // if (parts[0] === 'dashboard') return 'dashboard'  // disabled for now
     if (parts[0] === 'signals') return 'signals'
     return 'routes'
@@ -60,6 +62,11 @@
 
     // Restore state from URL on load
     page = parsePage()
+    // Auto-navigate to driving page when onroad (unless already on a specific page)
+    if (isOnroad && page === 'routes') {
+      page = 'driving'
+      history.replaceState(null, '', '/driving')
+    }
     const initialRoute = parseRoutePath()
     if (initialRoute) selectedRoute.set(initialRoute)
 
@@ -114,6 +121,12 @@
     history.pushState(null, '', '/plugins')
   }
 
+  function showDriving() {
+    page = 'driving'
+    selectedRoute.set(null)
+    history.pushState(null, '', '/driving')
+  }
+
   function showScreenshots() {
     page = 'screenshots'
     selectedRoute.set(null)
@@ -130,7 +143,9 @@
   }
 </script>
 
-{#if page === 'signals'}
+{#if page === 'driving'}
+  <DrivingPage />
+{:else if page === 'signals'}
   <SignalBrowserPage />
 {:else if page === 'tiles'}
   <TileManager />
@@ -143,6 +158,12 @@
     <DeviceHeader>
       {#snippet nav()}
         <div class="flex items-center gap-1">
+          <button
+            class="px-3 py-1.5 text-sm rounded transition-colors {page === 'driving' ? 'bg-surface-700 text-surface-50' : 'text-surface-400 hover:text-surface-200'}"
+            onclick={showDriving}
+          >
+            Driving
+          </button>
           {#if !isOnroad}
           <button
             class="px-3 py-1.5 text-sm rounded transition-colors {page === 'routes' && !$selectedRoute ? 'bg-surface-700 text-surface-50' : 'text-surface-400 hover:text-surface-200'}"
@@ -207,7 +228,10 @@
       {:else if isOnroad}
         <div class="flex items-center justify-center h-64">
           <div class="text-center">
-            <p class="text-surface-400 text-lg">Routes unavailable while driving</p>
+            <p class="text-surface-400 text-lg mb-4">Routes unavailable while driving</p>
+            <button class="px-4 py-2 bg-surface-700 text-surface-50 rounded" onclick={showDriving}>
+              Open Driving View
+            </button>
           </div>
         </div>
       {:else if $selectedRoute}

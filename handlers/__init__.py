@@ -114,6 +114,10 @@ from .dashboard import (
     handle_dashboard_ws,
 )
 
+from .driving import (
+    handle_driving_ws,
+)
+
 from .signals import (
     handle_signal_catalog,
     handle_signal_data,
