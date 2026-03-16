@@ -308,15 +308,26 @@
   }
 
   // ── Fullscreen ──
-  function toggleFullscreen() {
+  function enterFullscreen() {
     const el = document.documentElement
-    if (!document.fullscreenElement) {
-      el.requestFullscreen?.() || el.webkitRequestFullscreen?.()
-      fullscreen = true
-    } else {
+    if (document.fullscreenElement || document.webkitFullscreenElement) return
+    const p = el.requestFullscreen?.() || el.webkitRequestFullscreen?.()
+    if (p && p.then) p.then(() => { fullscreen = true }).catch(() => {})
+    else fullscreen = true
+  }
+
+  function toggleFullscreen() {
+    if (document.fullscreenElement || document.webkitFullscreenElement) {
       document.exitFullscreen?.() || document.webkitExitFullscreen?.()
       fullscreen = false
+    } else {
+      enterFullscreen()
     }
+  }
+
+  // Tap on video area → enter fullscreen (user gesture required on iOS)
+  function handleVideoTap() {
+    if (!fullscreen) enterFullscreen()
   }
 
   // Resize canvas to match video
@@ -348,8 +359,17 @@
     // Lock to landscape on mobile
     screen.orientation?.lock?.('landscape').catch(() => {})
 
+    // Track fullscreen changes (e.g. user presses Escape)
+    function onFsChange() {
+      fullscreen = !!(document.fullscreenElement || document.webkitFullscreenElement)
+    }
+    document.addEventListener('fullscreenchange', onFsChange)
+    document.addEventListener('webkitfullscreenchange', onFsChange)
+
     return () => {
       screen.orientation?.unlock?.()
+      document.removeEventListener('fullscreenchange', onFsChange)
+      document.removeEventListener('webkitfullscreenchange', onFsChange)
     }
   })
 
@@ -361,7 +381,9 @@
   })
 </script>
 
-<div class="driving-container">
+<!-- svelte-ignore a11y_click_events_have_key_events -->
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div class="driving-container" onclick={handleVideoTap}>
   <!-- Video layer (WebRTC camera feed) -->
   <!-- svelte-ignore a11y_media_has_caption -->
   <video
@@ -384,7 +406,7 @@
       <div class="status-card">
         {#if error}
           <p class="text-red-400 text-lg">{error}</p>
-          <button class="btn-retry" onclick={() => { disconnectWebRTC(); connectWebRTC() }}>
+          <button class="btn-retry" onclick={(e) => { e.stopPropagation(); disconnectWebRTC(); connectWebRTC() }}>
             Retry
           </button>
         {:else}
@@ -395,8 +417,15 @@
     </div>
   {/if}
 
+  <!-- Tap to fullscreen hint (shown briefly when not fullscreen) -->
+  {#if connected && !fullscreen}
+    <div class="fullscreen-hint">
+      Tap to go fullscreen
+    </div>
+  {/if}
+
   <!-- Bottom controls bar -->
-  <div class="controls-bar">
+  <div class="controls-bar" onclick={(e) => e.stopPropagation()}>
     <!-- Connection indicators -->
     <div class="flex items-center gap-2">
       <div class="indicator" class:indicator-ok={connected} class:indicator-err={!connected}></div>
@@ -519,4 +548,25 @@
     cursor: pointer;
   }
   .btn-control:hover { background: rgba(255, 255, 255, 0.2); }
+
+  .fullscreen-hint {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    padding: 0.75rem 1.5rem;
+    background: rgba(0, 0, 0, 0.6);
+    color: rgba(255, 255, 255, 0.8);
+    border-radius: 0.75rem;
+    font-size: 0.9rem;
+    pointer-events: none;
+    z-index: 8;
+    animation: fadeHint 4s ease-out forwards;
+  }
+
+  @keyframes fadeHint {
+    0% { opacity: 1; }
+    70% { opacity: 1; }
+    100% { opacity: 0; }
+  }
 </style>
