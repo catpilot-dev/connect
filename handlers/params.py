@@ -42,6 +42,8 @@ TOGGLE_PARAMS = [
     "OpenpilotEnabledToggle", "ExperimentalMode",
     "DisengageOnAccelerator", "IsLdwEnabled", "AlwaysOnDM",
     "RecordFront", "RecordAudio", "IsMetric", "LongitudinalPersonality",
+    # Cat-eye headless mode
+    "CatEyePhoneRequired",
     # Developer toggles
     "AdbEnabled", "SshEnabled",
     "JoystickDebugMode", "LongitudinalManeuverMode",

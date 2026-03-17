@@ -107,6 +107,7 @@ from .ssh_keys import (
     handle_ssh_keys_set,
     handle_ssh_keys_delete,
     handle_webrtc,
+    handle_webrtc_health,
 )
 
 from .dashboard import (
@@ -116,6 +117,10 @@ from .dashboard import (
 
 from .driving import (
     handle_driving_ws,
+)
+
+from .home import (
+    handle_home_ws,
 )
 
 from .signals import (

@@ -119,7 +119,9 @@ from handlers import (
     handle_ssh_keys_set,
     handle_ssh_keys_delete,
     handle_webrtc,
+    handle_webrtc_health,
     handle_driving_ws,
+    handle_home_ws,
 )
 from hud_stream import HudStreamManager, is_available as hud_stream_available
 from route_store import DEFAULT_DATA_DIR, DEFAULT_PORT, RouteStore
@@ -327,6 +329,7 @@ def create_app(data_dir: str, static_dir: str) -> web.Application:
     app.router.add_delete("/v1/ssh-keys", handle_ssh_keys_delete)
 
     app.router.add_post("/api/webrtc", handle_webrtc)
+    app.router.add_get("/api/webrtc/health", handle_webrtc_health)
 
     # Dashboard telemetry (replay REST + live WebSocket)
     app.router.add_get("/v1/dashboard/telemetry/{routeName}/{segments}", handle_dashboard_telemetry)
@@ -334,6 +337,9 @@ def create_app(data_dir: str, static_dir: str) -> web.Application:
 
     # Driving page (live camera + HUD overlay WebSocket)
     app.router.add_get("/ws/driving", handle_driving_ws)
+
+    # Home page (offroad device status WebSocket)
+    app.router.add_get("/ws/home", handle_home_ws)
 
     # Signal browser (catalog + data extraction)
     app.router.add_get("/v1/route/{routeName}/signals/catalog", handle_signal_catalog)

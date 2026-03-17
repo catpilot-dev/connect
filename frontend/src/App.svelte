@@ -13,6 +13,7 @@
   import PluginsPage from './lib/pages/PluginsPage.svelte'
   import ScreenshotsPage from './lib/pages/ScreenshotsPage.svelte'
   import DrivingPage from './lib/pages/DrivingPage.svelte'
+  import HomePage from './lib/pages/HomePage.svelte'
 
   let error = $state(null)
   let isOnroad = $state(false)
@@ -25,6 +26,7 @@
     if (parts[0] === 'plugins') return 'plugins'
     if (parts[0] === 'screenshots') return 'screenshots'
     if (parts[0] === 'driving') return 'driving'
+    if (parts[0] === 'home') return 'home'
     // if (parts[0] === 'dashboard') return 'dashboard'  // disabled for now
     if (parts[0] === 'signals') return 'signals'
     return 'routes'
@@ -62,10 +64,13 @@
 
     // Restore state from URL on load
     page = parsePage()
-    // Auto-navigate to driving page when onroad (unless already on a specific page)
-    if (isOnroad && page === 'routes') {
+    // Auto-navigate: onroad → driving, offroad default → home
+    if (isOnroad && (page === 'routes' || page === 'home')) {
       page = 'driving'
       history.replaceState(null, '', '/driving')
+    } else if (!isOnroad && page === 'routes') {
+      page = 'home'
+      history.replaceState(null, '', '/home')
     }
     const initialRoute = parseRoutePath()
     if (initialRoute) selectedRoute.set(initialRoute)
@@ -95,6 +100,12 @@
 
     return unsub
   })
+
+  function showHome() {
+    page = 'home'
+    selectedRoute.set(null)
+    history.pushState(null, '', '/home')
+  }
 
   function showRoutes() {
     if (isOnroad) return
@@ -145,6 +156,8 @@
 
 {#if page === 'driving'}
   <DrivingPage />
+{:else if page === 'home'}
+  <HomePage />
 {:else if page === 'signals'}
   <SignalBrowserPage />
 {:else if page === 'tiles'}
@@ -158,6 +171,12 @@
     <DeviceHeader>
       {#snippet nav()}
         <div class="flex items-center gap-1">
+          <button
+            class="px-3 py-1.5 text-sm rounded transition-colors {page === 'home' ? 'bg-surface-700 text-surface-50' : 'text-surface-400 hover:text-surface-200'}"
+            onclick={showHome}
+          >
+            Home
+          </button>
           <button
             class="px-3 py-1.5 text-sm rounded transition-colors {page === 'driving' ? 'bg-surface-700 text-surface-50' : 'text-surface-400 hover:text-surface-200'}"
             onclick={showDriving}

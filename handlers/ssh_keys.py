@@ -61,9 +61,35 @@ async def handle_webrtc(request: web.Request) -> web.Response:
     body = await request.json()
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.post("http://localhost:5001/stream", json=body) as resp:
+            async with session.post(
+                "http://localhost:5001/stream", json=body, timeout=aiohttp.ClientTimeout(total=10)
+            ) as resp:
+                if resp.status != 200:
+                    text = await resp.text()
+                    logger.error("webrtcd returned %d: %s", resp.status, text[:200])
+                    return error_response(f"webrtcd error {resp.status}: {text[:200]}", resp.status)
                 data = await resp.json()
                 return web.json_response(data)
+    except aiohttp.ClientConnectorError:
+        logger.error("webrtcd not reachable on localhost:5001 — is it running?")
+        return error_response("webrtcd not running (port 5001 unreachable)", 502)
+    except asyncio.TimeoutError:
+        logger.error("webrtcd signaling timeout after 10s")
+        return error_response("webrtcd signaling timeout", 504)
     except Exception as e:
-        logger.warning("WebRTC proxy error: %s", e)
-        return error_response(f"webrtcd unavailable: {e}", 502)
+        logger.error("WebRTC proxy error: %s", e)
+        return error_response(f"webrtcd error: {e}", 502)
+
+
+async def handle_webrtc_health(request: web.Request) -> web.Response:
+    """GET /api/webrtc/health — check if webrtcd is reachable."""
+    import aiohttp
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                "http://localhost:5001/schema", timeout=aiohttp.ClientTimeout(total=2)
+            ) as resp:
+                await resp.read()
+                return web.json_response({"status": "ok"})
+    except Exception:
+        return web.json_response({"status": "unavailable"}, status=503)

@@ -11,6 +11,9 @@
   let connected = $state(false)
   let wsConnected = $state(false)
   let error = $state(null)
+  let errorDetail = $state(null)   // technical detail shown below main error
+  let retryCount = $state(0)
+  let retryTimer = null
   let fullscreen = $state(false)
 
   // Telemetry from dashboard WS
@@ -32,8 +35,42 @@
   let modelData = $state(null)
 
   // ── WebRTC: live camera feed ──
+  async function checkWebrtcdHealth() {
+    try {
+      const res = await fetch('/api/webrtc/health')
+      if (res.status === 503) return { ok: false, reason: 'Camera service (webrtcd) is not running' }
+      if (!res.ok) return { ok: false, reason: `Camera service error: HTTP ${res.status}` }
+      return { ok: true }
+    } catch (e) {
+      return { ok: false, reason: `Cannot reach device: ${e.message}` }
+    }
+  }
+
+  function scheduleRetry() {
+    if (retryTimer) return
+    // Backoff: 3s, 6s, 12s, max 15s
+    const delay = Math.min(3000 * Math.pow(2, retryCount), 15000)
+    retryCount += 1
+    retryTimer = setTimeout(() => {
+      retryTimer = null
+      disconnectWebRTC()
+      connectWebRTC()
+    }, delay)
+  }
+
   async function connectWebRTC() {
     error = null
+    errorDetail = null
+
+    // Check webrtcd is up before attempting WebRTC
+    const health = await checkWebrtcdHealth()
+    if (!health.ok) {
+      error = health.reason
+      errorDetail = 'webrtcd must be running (onroad only). Will retry automatically.'
+      console.error('[Driving] health check failed:', health.reason)
+      scheduleRetry()
+      return
+    }
 
     const rtc = new RTCPeerConnection({
       iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
@@ -43,8 +80,16 @@
     rtc.onconnectionstatechange = () => {
       console.log('[Driving] WebRTC state:', rtc.connectionState)
       connected = rtc.connectionState === 'connected'
+      if (connected) retryCount = 0  // reset backoff on success
       if (rtc.connectionState === 'failed') {
-        error = 'WebRTC connection failed'
+        error = 'WebRTC connection failed (ICE)'
+        errorDetail = 'Network path between phone and device failed. Check WiFi/hotspot.'
+        console.error('[Driving] ICE connection failed')
+        scheduleRetry()
+      }
+      if (rtc.connectionState === 'disconnected') {
+        connected = false
+        scheduleRetry()
       }
     }
 
@@ -78,12 +123,24 @@
       const answer = await liveStreamOffer(rtc.localDescription.sdp)
       await rtc.setRemoteDescription(new RTCSessionDescription(answer))
     } catch (e) {
-      error = `WebRTC signaling failed: ${e.message}`
-      console.error('[Driving] signaling error:', e)
+      const msg = e.message || String(e)
+      if (msg.includes('502') || msg.includes('unavailable')) {
+        error = 'Camera service unavailable'
+        errorDetail = 'webrtcd not reachable on port 5001. Is the car started?'
+      } else if (msg.includes('504') || msg.includes('timeout')) {
+        error = 'Camera service timeout'
+        errorDetail = 'webrtcd took too long to respond. Device may be overloaded.'
+      } else {
+        error = 'Signaling failed'
+        errorDetail = msg
+      }
+      console.error('[Driving] signaling error:', msg)
+      scheduleRetry()
     }
   }
 
   function disconnectWebRTC() {
+    if (retryTimer) { clearTimeout(retryTimer); retryTimer = null }
     if (pc) {
       pc.close()
       pc = null
@@ -364,6 +421,7 @@
   })
 
   onDestroy(() => {
+    if (retryTimer) { clearTimeout(retryTimer); retryTimer = null }
     disconnectWebRTC()
     disconnectTelemetry()
     if (resizeObserver) resizeObserver.disconnect()
@@ -395,9 +453,19 @@
     <div class="driving-overlay">
       <div class="status-card">
         {#if error}
-          <p class="text-red-400 text-lg">{error}</p>
-          <button class="btn-retry" onclick={(e) => { e.stopPropagation(); disconnectWebRTC(); connectWebRTC() }}>
-            Retry
+          <p class="error-title">{error}</p>
+          {#if errorDetail}
+            <p class="error-detail">{errorDetail}</p>
+          {/if}
+          <p class="error-retry-hint">Retrying automatically (attempt {retryCount})…</p>
+          <button class="btn-retry" onclick={(e) => {
+            e.stopPropagation()
+            retryCount = 0
+            if (retryTimer) { clearTimeout(retryTimer); retryTimer = null }
+            disconnectWebRTC()
+            connectWebRTC()
+          }}>
+            Retry Now
           </button>
         {:else}
           <div class="spinner"></div>
@@ -497,8 +565,28 @@
     to { transform: rotate(360deg); }
   }
 
+  .error-title {
+    color: #ff6b6b;
+    font-size: 1.1rem;
+    font-weight: 600;
+    margin-bottom: 0.5rem;
+  }
+
+  .error-detail {
+    color: rgba(255, 255, 255, 0.55);
+    font-size: 0.8rem;
+    max-width: 280px;
+    line-height: 1.4;
+    margin-bottom: 0.5rem;
+  }
+
+  .error-retry-hint {
+    color: rgba(255, 255, 255, 0.35);
+    font-size: 0.72rem;
+    margin-bottom: 0.75rem;
+  }
+
   .btn-retry {
-    margin-top: 1rem;
     padding: 0.5rem 1.5rem;
     background: rgba(255, 255, 255, 0.1);
     color: white;
