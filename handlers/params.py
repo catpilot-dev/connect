@@ -5,7 +5,7 @@ import sys
 from aiohttp import web
 
 from config import OPENPILOT_DIR as _OPENPILOT_DIR, PARAMS_DIR
-from handler_helpers import error_response, parse_json, read_param, write_param, read_plugin_param
+from handler_helpers import error_response, parse_json, read_param, write_param, read_plugin_param, write_plugin_param
 
 logger = logging.getLogger("connect")
 
@@ -50,6 +50,12 @@ TOGGLE_PARAMS = [
     "AlphaLongitudinalEnabled",
 ]
 
+# Plugin params served via the toggles panel:
+# key → (plugin_id, param_name) stored in /data/plugins-runtime/<id>/data/
+_PLUGIN_TOGGLE_PARAMS = {
+    "CatEyePhoneRequired": ("phone_display", "CatEyePhoneRequired"),
+}
+
 # Mutual exclusion pairs — toggling one ON turns the other OFF
 _TOGGLE_MUTEX = {
     "JoystickDebugMode": "LongitudinalManeuverMode",
@@ -60,11 +66,14 @@ async def handle_toggles_get(request: web.Request) -> web.Response:
     """GET /v1/toggles — read all toggle params."""
     result = {}
     for key in TOGGLE_PARAMS:
-        raw = read_param(key)
-        if key == "LongitudinalPersonality":
+        if key in _PLUGIN_TOGGLE_PARAMS:
+            plugin_id, param_name = _PLUGIN_TOGGLE_PARAMS[key]
+            result[key] = read_plugin_param(plugin_id, param_name) == "1"
+        elif key == "LongitudinalPersonality":
+            raw = read_param(key)
             result[key] = int(raw) if raw else 2  # default: Relaxed
         else:
-            result[key] = raw == "1"
+            result[key] = read_param(key) == "1"
     return web.json_response(result)
 
 
@@ -76,7 +85,10 @@ async def handle_toggles_set(request: web.Request) -> web.Response:
     if key not in TOGGLE_PARAMS:
         raise web.HTTPBadRequest(text=json.dumps({"error": f"Unknown toggle: {key}"}))
     try:
-        if key == "LongitudinalPersonality":
+        if key in _PLUGIN_TOGGLE_PARAMS:
+            plugin_id, param_name = _PLUGIN_TOGGLE_PARAMS[key]
+            write_plugin_param(plugin_id, param_name, "1" if value else "0")
+        elif key == "LongitudinalPersonality":
             write_param(key, str(int(value)))
         else:
             write_param(key, "1" if value else "0")
