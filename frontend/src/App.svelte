@@ -41,6 +41,22 @@
     return parts.length >= 2 ? parts[1] : null  // local_id
   }
 
+  // ── Screen wake lock ─────────────────────────────────────────────────────
+  // Keeps the phone screen on while COD is open.
+  // Re-acquires automatically after tab visibility is restored (e.g. unlock).
+  function startWakeLock() {
+    if (!navigator.wakeLock) return
+    let lock = null
+    async function acquire() {
+      try { lock = await navigator.wakeLock.request('screen') } catch {}
+    }
+    acquire()
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') acquire()
+    })
+    return () => lock?.release()
+  }
+
   // ── Phone GPS sender ─────────────────────────────────────────────────────
   // Streams browser Geolocation fixes to /ws/gps on the device so the
   // phone_gps plugin can publish gpsLocationExternal cereal messages.
@@ -147,8 +163,9 @@
       selectedRoute.set(route)
     })
 
+    const stopWakeLock = startWakeLock()
     const stopGps = startGpsSender()
-    return () => { unsub(); if (stopGps) stopGps() }
+    return () => { unsub(); if (stopWakeLock) stopWakeLock(); if (stopGps) stopGps() }
   })
 
   function showHome() {
