@@ -41,6 +41,55 @@
     return parts.length >= 2 ? parts[1] : null  // local_id
   }
 
+  // ── Phone GPS sender ─────────────────────────────────────────────────────
+  // Streams browser Geolocation fixes to /ws/gps on the device so the
+  // phone_gps plugin can publish gpsLocationExternal cereal messages.
+  function startGpsSender() {
+    if (!navigator.geolocation) return
+
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws'
+    let ws = null
+    let watchId = null
+    let reconnectTimer = null
+
+    function connect() {
+      ws = new WebSocket(`${proto}://${location.host}/ws/gps`)
+      ws.onopen = () => {
+        watchId = navigator.geolocation.watchPosition(
+          (pos) => {
+            if (ws.readyState !== WebSocket.OPEN) return
+            const c = pos.coords
+            ws.send(JSON.stringify({
+              latitude:         c.latitude,
+              longitude:        c.longitude,
+              altitude:         c.altitude,
+              speed:            c.speed,
+              heading:          c.heading,
+              accuracy:         c.accuracy,
+              altitudeAccuracy: c.altitudeAccuracy,
+              timestamp:        pos.timestamp,
+            }))
+          },
+          (err) => console.warn('phone_gps: geolocation error', err.message),
+          { enableHighAccuracy: true, maximumAge: 1000, timeout: 10000 },
+        )
+      }
+      ws.onclose = () => {
+        if (watchId !== null) { navigator.geolocation.clearWatch(watchId); watchId = null }
+        // Reconnect after 5s if page is still open
+        reconnectTimer = setTimeout(connect, 5000)
+      }
+    }
+
+    connect()
+
+    return () => {
+      clearTimeout(reconnectTimer)
+      if (watchId !== null) navigator.geolocation.clearWatch(watchId)
+      if (ws) ws.close()
+    }
+  }
+
   onMount(async () => {
     // Fetch all startup data in parallel
     const [onroadResult, devicesResult, paramsResult, updatesResult] = await Promise.allSettled([
@@ -98,7 +147,8 @@
       selectedRoute.set(route)
     })
 
-    return unsub
+    const stopGps = startGpsSender()
+    return () => { unsub(); if (stopGps) stopGps() }
   })
 
   function showHome() {
