@@ -4,12 +4,38 @@ import asyncio
 import json
 import logging
 import os
+import re
 
 from aiohttp import web
 
 from handler_helpers import PARAMS_DIR, error_response, read_param, write_param
 
 logger = logging.getLogger("connect")
+
+# iOS Safari 14+ anonymizes ICE host candidates with mDNS UUID.local hostnames
+# (e.g. "e3f4a5b6-c7d8-90ab-cdef-1234.local"). aioice cannot resolve these on
+# hotspot/LAN because multicast mDNS packets are not reliably forwarded by the
+# iPhone hotspot. The result: all host candidates are silently dropped and only
+# STUN-reflexive (public) candidates remain, which are unreachable on LAN → ICE
+# fails after ~60s timeout.
+#
+# Fix: replace .local hostnames in the offer SDP with the phone's actual LAN IP,
+# which is already known from the HTTP request source address.
+_MDNS_RE = re.compile(r'[0-9a-fA-F-]{8,}\.local')
+
+
+def _resolve_mdns_in_sdp(sdp: str, peer_ip: str) -> str:
+  """Replace mDNS .local hostnames in ICE candidates with the peer's real LAN IP."""
+  patched_lines = []
+  count = 0
+  for line in sdp.splitlines(keepends=True):
+    if line.startswith('a=candidate:') and '.local' in line:
+      line, n = _MDNS_RE.subn(peer_ip, line)
+      count += n
+    patched_lines.append(line)
+  if count:
+    logger.info("webrtc: patched %d mDNS candidate(s) → %s", count, peer_ip)
+  return ''.join(patched_lines)
 
 
 async def handle_ssh_keys_get(request: web.Request) -> web.Response:
@@ -59,6 +85,15 @@ async def handle_webrtc(request: web.Request) -> web.Response:
     """POST /api/webrtc — proxy WebRTC signaling to local webrtcd."""
     import aiohttp
     body = await request.json()
+
+    # Patch mDNS candidates in the offer SDP before forwarding to webrtcd
+    peer_ip = request.remote
+    if peer_ip and isinstance(body.get('sdp'), str):
+        patched_sdp = _resolve_mdns_in_sdp(body['sdp'], peer_ip)
+        if patched_sdp != body['sdp']:
+            body = dict(body)
+            body['sdp'] = patched_sdp
+
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(
