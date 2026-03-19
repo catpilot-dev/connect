@@ -225,7 +225,7 @@ def _driving_poller(latest, stop_event):
                     "brakePressed": bool(cs.brakePressed),
                     "cruiseSpeed": round(float(cs.cruiseState.speed), 2),
                     "cruiseEnabled": bool(cs.cruiseState.enabled),
-                    "steerCmd": round(float(cc.actuators.steer), 4),
+                    "steerCmd": round(float(cc.actuators.steeringAngleDeg), 4),
                     "accelCmd": round(float(cc.actuators.accel), 4),
                     "sdState": str(sd.state),
                     "sdEnabled": bool(sd.enabled),

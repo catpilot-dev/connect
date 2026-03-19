@@ -116,9 +116,9 @@
     const { ctx, w, h } = sizeCanvas(tempCanvas)
 
     const cx = w / 2
-    const cy = h * 0.60
-    const r  = Math.min(w * 0.44, h * 0.66)
-    const lw = r * 0.115
+    const cy = h * 0.58
+    const r  = Math.min(w * 0.44, h * 0.64)
+    const lw = r * 0.10
     const startAngle = Math.PI * 0.75
     const sweep = Math.PI * 1.5
 
@@ -126,9 +126,9 @@
 
     // Zone bands behind track
     const zones = [
-      { from: 0,    to: 0.42, color: 'rgba(0,229,255,0.06)' },
-      { from: 0.42, to: 0.72, color: 'rgba(255,179,0,0.06)' },
-      { from: 0.72, to: 1.0,  color: 'rgba(255,61,61,0.06)' },
+      { from: 0,    to: 0.42, color: 'rgba(0,255,148,0.07)' },
+      { from: 0.42, to: 0.72, color: 'rgba(247,183,49,0.07)' },
+      { from: 0.72, to: 1.0,  color: 'rgba(255,72,66,0.07)' },
     ]
     for (const z of zones) {
       ctx.beginPath()
@@ -142,7 +142,7 @@
     // Track base
     ctx.beginPath()
     ctx.arc(cx, cy, r, startAngle, startAngle + sweep)
-    ctx.strokeStyle = 'rgba(255,255,255,0.05)'
+    ctx.strokeStyle = 'rgba(255,255,255,0.06)'
     ctx.lineWidth = lw
     ctx.lineCap = 'butt'
     ctx.stroke()
@@ -152,12 +152,12 @@
       const frac = i / 10
       const a = startAngle + sweep * frac
       const isMajor = (i % 5 === 0)
-      const inner = r - lw * 1.15
-      const outer = r + lw * (isMajor ? 0.75 : 0.35)
+      const inner = r - lw * 1.1
+      const outer = r + lw * (isMajor ? 0.7 : 0.3)
       ctx.beginPath()
       ctx.moveTo(cx + Math.cos(a) * inner, cy + Math.sin(a) * inner)
       ctx.lineTo(cx + Math.cos(a) * outer, cy + Math.sin(a) * outer)
-      ctx.strokeStyle = isMajor ? 'rgba(255,255,255,0.22)' : 'rgba(255,255,255,0.08)'
+      ctx.strokeStyle = isMajor ? 'rgba(255,255,255,0.20)' : 'rgba(255,255,255,0.07)'
       ctx.lineWidth = isMajor ? 1.5 : 0.75
       ctx.stroke()
     }
@@ -166,16 +166,16 @@
       const t = Math.max(0, Math.min(100, temp))
       const frac = t / 100
       const fillEnd = startAngle + sweep * frac
-      const col = t < 50 ? '#00e5ff' : t < 75 ? '#ffb300' : '#ff3d3d'
+      const col = t < 50 ? '#00ff94' : t < 75 ? '#f7b731' : '#ff4842'
 
       // Glow pass
       ctx.save()
       ctx.shadowColor = col
-      ctx.shadowBlur = 16
+      ctx.shadowBlur = 20
       ctx.beginPath()
       ctx.arc(cx, cy, r, startAngle, fillEnd)
-      ctx.strokeStyle = col + '55'
-      ctx.lineWidth = lw * 2
+      ctx.strokeStyle = col + '40'
+      ctx.lineWidth = lw * 2.4
       ctx.lineCap = 'round'
       ctx.stroke()
       ctx.restore()
@@ -188,48 +188,48 @@
       ctx.lineCap = 'round'
       ctx.stroke()
 
-      // Tip glow
+      // Tip pulse dot
       const tx = cx + Math.cos(fillEnd) * r
       const ty = cy + Math.sin(fillEnd) * r
-      const tg = ctx.createRadialGradient(tx, ty, 0, tx, ty, lw * 1.8)
+      const tg = ctx.createRadialGradient(tx, ty, 0, tx, ty, lw * 2.2)
       tg.addColorStop(0,   col + 'ff')
-      tg.addColorStop(0.5, col + '70')
+      tg.addColorStop(0.4, col + '80')
       tg.addColorStop(1,   col + '00')
       ctx.beginPath()
-      ctx.arc(tx, ty, lw * 1.8, 0, Math.PI * 2)
+      ctx.arc(tx, ty, lw * 2.2, 0, Math.PI * 2)
       ctx.fillStyle = tg
       ctx.fill()
 
       // Value
       ctx.textAlign = 'center'
-      ctx.fillStyle = '#edf6fa'
-      ctx.font = `700 ${r * 0.75}px 'Share Tech Mono', monospace`
+      ctx.fillStyle = '#f0f4f8'
+      ctx.font = `700 ${r * 0.82}px 'Oxanium', monospace`
       ctx.textBaseline = 'alphabetic'
-      ctx.fillText(`${Math.round(t)}`, cx, cy + r * 0.06)
+      ctx.fillText(`${Math.round(t)}`, cx, cy + r * 0.08)
 
       ctx.fillStyle = col
-      ctx.font = `600 ${r * 0.26}px 'Share Tech Mono', monospace`
-      ctx.fillText('°C', cx + r * 0.34, cy - r * 0.28)
+      ctx.font = `600 ${r * 0.27}px 'Oxanium', monospace`
+      ctx.fillText('°C', cx + r * 0.38, cy - r * 0.30)
 
-      ctx.fillStyle = 'rgba(255,255,255,0.22)'
-      ctx.font = `600 ${r * 0.16}px 'Rajdhani', sans-serif`
+      ctx.fillStyle = 'rgba(255,255,255,0.20)'
+      ctx.font = `600 ${r * 0.155}px 'Rajdhani', sans-serif`
       ctx.textBaseline = 'top'
-      ctx.fillText('MAX TEMP', cx, cy + r * 0.16)
+      ctx.fillText('MAX TEMP', cx, cy + r * 0.18)
 
-      const zone = t < 50 ? 'COOL' : t < 75 ? 'WARM' : 'HOT'
-      ctx.fillStyle = col + 'bb'
-      ctx.font = `700 ${r * 0.14}px 'Rajdhani', sans-serif`
-      ctx.fillText(zone, cx, cy + r * 0.32)
+      const zone = t < 50 ? 'NOMINAL' : t < 75 ? 'ELEVATED' : 'CRITICAL'
+      ctx.fillStyle = col + 'cc'
+      ctx.font = `700 ${r * 0.135}px 'Rajdhani', sans-serif`
+      ctx.fillText(zone, cx, cy + r * 0.36)
     } else {
       ctx.textAlign = 'center'
       ctx.textBaseline = 'middle'
-      ctx.fillStyle = 'rgba(255,255,255,0.1)'
-      ctx.font = `700 ${r * 0.48}px 'Share Tech Mono', monospace`
+      ctx.fillStyle = 'rgba(255,255,255,0.08)'
+      ctx.font = `700 ${r * 0.5}px 'Oxanium', monospace`
       ctx.fillText('---', cx, cy)
-      ctx.fillStyle = 'rgba(255,255,255,0.14)'
+      ctx.fillStyle = 'rgba(255,255,255,0.12)'
       ctx.font = `600 ${r * 0.14}px 'Rajdhani', sans-serif`
       ctx.textBaseline = 'top'
-      ctx.fillText('AWAITING SIGNAL', cx, cy + r * 0.22)
+      ctx.fillText('AWAITING DATA', cx, cy + r * 0.22)
     }
   })
 
@@ -242,19 +242,12 @@
     if (!canvas) return
     const { ctx, w, h } = sizeCanvas(canvas)
     const cx = w / 2
-    const cy = h * 0.47
-    const r  = Math.min(w, h) * 0.33
-    const lw = r * 0.24
+    const cy = h * 0.44
+    const r  = Math.min(w, h) * 0.31
+    const lw = r * 0.26
     const start = -Math.PI / 2
 
     ctx.clearRect(0, 0, w, h)
-
-    // Outer decorative ring
-    ctx.beginPath()
-    ctx.arc(cx, cy, r + lw * 0.95, 0, Math.PI * 2)
-    ctx.strokeStyle = 'rgba(255,255,255,0.04)'
-    ctx.lineWidth = 0.75
-    ctx.stroke()
 
     // BG track
     ctx.beginPath()
@@ -269,11 +262,11 @@
       if (frac > 0) {
         ctx.save()
         ctx.shadowColor = color
-        ctx.shadowBlur = 10
+        ctx.shadowBlur = 12
         ctx.beginPath()
         ctx.arc(cx, cy, r, start, start + Math.PI * 2 * frac)
-        ctx.strokeStyle = color + '45'
-        ctx.lineWidth = lw * 1.6
+        ctx.strokeStyle = color + '38'
+        ctx.lineWidth = lw * 1.8
         ctx.lineCap = 'round'
         ctx.stroke()
         ctx.restore()
@@ -288,26 +281,26 @@
 
       ctx.textAlign = 'center'
       ctx.textBaseline = 'middle'
-      ctx.fillStyle = '#edf6fa'
-      ctx.font = `700 ${r * 0.64}px 'Share Tech Mono', monospace`
+      ctx.fillStyle = '#f0f4f8'
+      ctx.font = `700 ${r * 0.68}px 'Oxanium', monospace`
       ctx.fillText(`${Math.round(pct)}`, cx, cy)
     } else {
       ctx.textAlign = 'center'
       ctx.textBaseline = 'middle'
-      ctx.fillStyle = 'rgba(255,255,255,0.14)'
-      ctx.font = `700 ${r * 0.5}px 'Share Tech Mono', monospace`
+      ctx.fillStyle = 'rgba(255,255,255,0.12)'
+      ctx.font = `700 ${r * 0.52}px 'Oxanium', monospace`
       ctx.fillText('--', cx, cy)
     }
 
-    ctx.fillStyle = 'rgba(255,255,255,0.28)'
+    ctx.fillStyle = 'rgba(255,255,255,0.26)'
     ctx.font = `700 ${r * 0.28}px 'Rajdhani', sans-serif`
     ctx.textBaseline = 'middle'
-    ctx.fillText(label, cx, cy + r * 0.8 + lw * 0.55)
+    ctx.fillText(label, cx, cy + r + lw * 0.72)
   }
 
-  $effect(() => { drawRing(cpuCanvas, cpuUsage, '#00e5ff', 'CPU') })
-  $effect(() => { drawRing(gpuCanvas, gpuUsage, '#bf6dff', 'GPU') })
-  $effect(() => { drawRing(memCanvas, memUsage, '#00ff87', 'MEM') })
+  $effect(() => { drawRing(cpuCanvas, cpuUsage, '#f7b731', 'CPU') })
+  $effect(() => { drawRing(gpuCanvas, gpuUsage, '#b06bff', 'GPU') })
+  $effect(() => { drawRing(memCanvas, memUsage, '#00ff94', 'MEM') })
 
   // ── Network signal bars ───────────────────────────────────────────────────
   let netCanvas = $state(null)
@@ -324,9 +317,9 @@
       ctx.strokeStyle = 'rgba(255,255,255,0.15)'
       ctx.lineWidth = 1.5
       ctx.lineCap = 'round'
-      const m = w * 0.2
-      ctx.beginPath(); ctx.moveTo(m, m); ctx.lineTo(w - m, h * 0.62); ctx.stroke()
-      ctx.beginPath(); ctx.moveTo(w - m, m); ctx.lineTo(m, h * 0.62); ctx.stroke()
+      const m = w * 0.22
+      ctx.beginPath(); ctx.moveTo(m, m); ctx.lineTo(w - m, h * 0.6); ctx.stroke()
+      ctx.beginPath(); ctx.moveTo(w - m, m); ctx.lineTo(m, h * 0.6); ctx.stroke()
       return
     }
 
@@ -334,16 +327,16 @@
     const n = 4
     const barW = w * 0.14
     const gap = (w - n * barW) / (n + 1)
-    const maxH = h * 0.72
-    const col = active >= 3 ? '#00ff87' : active >= 2 ? '#ffb300' : '#ff3d3d'
+    const maxH = h * 0.70
+    const col = active >= 3 ? '#00ff94' : active >= 2 ? '#f7b731' : '#ff4842'
 
     for (let i = 0; i < n; i++) {
-      const barH = maxH * (0.22 + 0.26 * i)
+      const barH = maxH * (0.2 + 0.27 * i)
       const x = gap + i * (barW + gap)
       const y = maxH - barH
       const on = i < active
       ctx.save()
-      if (on) { ctx.shadowColor = col; ctx.shadowBlur = 5 }
+      if (on) { ctx.shadowColor = col; ctx.shadowBlur = 6 }
       if (ctx.roundRect) {
         ctx.beginPath()
         ctx.roundRect(x, y, barW, barH, 2)
@@ -358,8 +351,8 @@
 
     const typeLabel = { wifi: 'WiFi', cell4G: '4G', cell5G: '5G', cell3G: '3G', cell2G: '2G', ethernet: 'ETH' }[type] ?? ''
     if (typeLabel) {
-      ctx.fillStyle = 'rgba(255,255,255,0.28)'
-      ctx.font = `600 ${h * 0.17}px 'Rajdhani', sans-serif`
+      ctx.fillStyle = 'rgba(255,255,255,0.26)'
+      ctx.font = `600 ${h * 0.16}px 'Rajdhani', sans-serif`
       ctx.textAlign = 'center'
       ctx.textBaseline = 'bottom'
       ctx.fillText(typeLabel, w / 2, h)
@@ -376,9 +369,9 @@
     const { ctx, w, h } = sizeCanvas(gpsCanvas)
     ctx.clearRect(0, 0, w, h)
 
-    const cx = w / 2, cy = h * 0.47
-    const r  = Math.min(w, h) * 0.32
-    const lw = r * 0.22
+    const cx = w / 2, cy = h * 0.44
+    const r  = Math.min(w, h) * 0.30
+    const lw = r * 0.24
 
     ctx.beginPath()
     ctx.arc(cx, cy, r, 0, Math.PI * 2)
@@ -388,10 +381,10 @@
 
     if (fix && acc !== null) {
       const frac = acc <= 3 ? 1.0 : acc <= 10 ? 0.85 : acc <= 25 ? 0.6 : acc <= 50 ? 0.35 : 0.12
-      const col = acc <= 10 ? '#00ff87' : acc <= 25 ? '#ffb300' : '#ff3d3d'
+      const col = acc <= 10 ? '#00ff94' : acc <= 25 ? '#f7b731' : '#ff4842'
       ctx.save()
       ctx.shadowColor = col
-      ctx.shadowBlur = 8
+      ctx.shadowBlur = 10
       ctx.beginPath()
       ctx.arc(cx, cy, r, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * frac)
       ctx.strokeStyle = col
@@ -402,44 +395,54 @@
 
       ctx.textAlign = 'center'
       ctx.textBaseline = 'middle'
-      ctx.fillStyle = '#edf6fa'
-      ctx.font = `700 ${r * 0.62}px 'Share Tech Mono', monospace`
+      ctx.fillStyle = '#f0f4f8'
+      ctx.font = `700 ${r * 0.65}px 'Oxanium', monospace`
       ctx.fillText(acc < 100 ? `${Math.round(acc)}` : '99+', cx, cy)
     } else {
       ctx.textAlign = 'center'
       ctx.textBaseline = 'middle'
-      ctx.fillStyle = 'rgba(255,255,255,0.13)'
-      ctx.font = `700 ${r * 0.48}px 'Share Tech Mono', monospace`
+      ctx.fillStyle = 'rgba(255,255,255,0.12)'
+      ctx.font = `700 ${r * 0.50}px 'Oxanium', monospace`
       ctx.fillText('--', cx, cy)
     }
 
-    ctx.fillStyle = fix ? '#00ff87bb' : 'rgba(255,255,255,0.22)'
-    ctx.font = `700 ${r * 0.27}px 'Rajdhani', sans-serif`
+    ctx.fillStyle = fix ? '#00ff94bb' : 'rgba(255,255,255,0.20)'
+    ctx.font = `700 ${r * 0.28}px 'Rajdhani', sans-serif`
     ctx.textBaseline = 'middle'
-    ctx.fillText(fix ? 'GPS m' : 'NO FIX', cx, cy + r * 0.8 + lw * 0.55)
+    ctx.fillText(fix ? 'GPS m' : 'NO FIX', cx, cy + r + lw * 0.72)
   })
 </script>
 
 <svelte:head>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="">
-  <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=Oxanium:wght@400;600;700;800&display=swap" rel="stylesheet">
 </svelte:head>
 
 <div class="home-page">
 
-  <!-- Ambient depth layer -->
-  <div class="ambient" aria-hidden="true"></div>
+  <!-- Layered background -->
+  <div class="bg-layer" aria-hidden="true"></div>
 
   <!-- ── Header ────────────────────────────────────────────────────────────── -->
   <header class="home-header">
     <div class="brand">
-      <span class="brand-name">CATEYE</span>
-      <span class="brand-ver">{version}</span>
+      <div class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 16 10" fill="none">
+          <path d="M0 5 L5 1 L8 5 L11 1 L16 5 L11 9 L8 5 L5 9 Z" fill="currentColor" opacity="0.9"/>
+        </svg>
+      </div>
+      <div class="brand-text">
+        <span class="brand-name">CATEYE</span>
+        <span class="brand-ver">{version}</span>
+      </div>
     </div>
     <div class="header-actions">
       {#if updateAvailable}
-        <span class="update-badge">UPDATE</span>
+        <a href="/settings" class="update-badge">
+          <span class="update-dot"></span>
+          UPDATE
+        </a>
       {/if}
       <a href="/settings" class="icon-btn" aria-label="Settings">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
@@ -460,57 +463,53 @@
       </div>
     {:else}
 
-      <!-- Status strip -->
-      <div class="status-strip">
-        <div class="status-ready">
-          <span class="ready-dot"></span>
-          <span class="ready-label">READY</span>
+      <!-- Status bar -->
+      <div class="status-bar">
+        <div class="status-left">
+          <span class="status-pip" class:live={isLive}></span>
+          <span class="status-text" class:live={isLive}>{isLive ? 'ONLINE' : 'OFFLINE'}</span>
         </div>
-        <div class="status-indicators">
-          <canvas bind:this={netCanvas} class="indicator-canvas net-canvas" aria-label="Network"></canvas>
-          <canvas bind:this={gpsCanvas} class="indicator-canvas gps-canvas" aria-label="GPS"></canvas>
+        <div class="status-right">
+          <canvas bind:this={netCanvas} class="sig-canvas" aria-label="Network"></canvas>
+          <div class="sig-divider"></div>
+          <canvas bind:this={gpsCanvas} class="sig-canvas" aria-label="GPS"></canvas>
         </div>
       </div>
 
       <!-- Instrument cluster -->
       {#if isLive}
-        <div class="instrument-panel">
-          <div class="panel-eyebrow">
-            <span class="eyebrow-line"></span>
-            <span class="eyebrow-text">SYSTEM MONITOR</span>
-            <span class="eyebrow-line"></span>
+        <div class="cluster">
+          <!-- Temp: left column, full height -->
+          <div class="cluster-temp">
+            <canvas bind:this={tempCanvas} class="temp-canvas" aria-label="Temperature"></canvas>
           </div>
-          <div class="instruments">
-            <div class="temp-wrap">
-              <canvas bind:this={tempCanvas} class="temp-canvas" aria-label="Temperature"></canvas>
-            </div>
-            <div class="rings-col">
-              <canvas bind:this={cpuCanvas} class="ring-canvas" aria-label="CPU"></canvas>
-              <canvas bind:this={gpuCanvas} class="ring-canvas" aria-label="GPU"></canvas>
-              <canvas bind:this={memCanvas} class="ring-canvas" aria-label="MEM"></canvas>
-            </div>
+          <!-- Resource rings: right column, stacked -->
+          <div class="cluster-rings">
+            <canvas bind:this={cpuCanvas} class="ring-canvas" aria-label="CPU"></canvas>
+            <canvas bind:this={gpuCanvas} class="ring-canvas" aria-label="GPU"></canvas>
+            <canvas bind:this={memCanvas} class="ring-canvas" aria-label="MEM"></canvas>
           </div>
         </div>
       {/if}
 
-      <!-- Stats -->
+      <!-- Drive stats -->
       {#if stats}
-        <div class="stats-panel">
-          <div class="stats-eyebrow">THIS WEEK</div>
-          <div class="stats-row">
-            <div class="stat-block">
+        <div class="stats-card">
+          <div class="stats-label">THIS WEEK</div>
+          <div class="stats-grid">
+            <div class="stat">
               <span class="stat-val">{weekRoutes}</span>
-              <span class="stat-lbl">DRIVES</span>
+              <span class="stat-key">DRIVES</span>
             </div>
-            <div class="stat-sep"></div>
-            <div class="stat-block">
+            <div class="stat-line"></div>
+            <div class="stat">
               <span class="stat-val">{weekDistanceDisplay}</span>
-              <span class="stat-lbl">DISTANCE</span>
+              <span class="stat-key">DISTANCE</span>
             </div>
-            <div class="stat-sep"></div>
-            <div class="stat-block">
+            <div class="stat-line"></div>
+            <div class="stat">
               <span class="stat-val">{allRoutes}</span>
-              <span class="stat-lbl">ALL TIME</span>
+              <span class="stat-key">ALL TIME</span>
             </div>
           </div>
         </div>
@@ -518,10 +517,10 @@
 
       <!-- Storage -->
       {#if storage}
-        <div class="storage-panel">
-          <div class="storage-head">
-            <span class="storage-lbl">STORAGE</span>
-            <span class="storage-num">{storageUsedGb} <span class="storage-unit">/ {storageTotalGb} GB</span></span>
+        <div class="storage-card">
+          <div class="storage-meta">
+            <span class="storage-key">STORAGE</span>
+            <span class="storage-val">{storageUsedGb}<span class="storage-of"> / {storageTotalGb} GB</span></span>
             <span class="storage-pct" class:warn={storagePct > 80} class:crit={storagePct > 95}>{storagePct}%</span>
           </div>
           <div class="storage-track">
@@ -531,9 +530,9 @@
               class:crit={storagePct > 95}
               style="width: {storagePct}%"
             ></div>
-            <div class="storage-mark" style="left: 25%"></div>
-            <div class="storage-mark" style="left: 50%"></div>
-            <div class="storage-mark" style="left: 75%"></div>
+            <div class="storage-notch" style="left: 25%"></div>
+            <div class="storage-notch" style="left: 50%"></div>
+            <div class="storage-notch" style="left: 75%"></div>
           </div>
         </div>
       {/if}
@@ -543,46 +542,48 @@
 
   <!-- ── Nav ───────────────────────────────────────────────────────────────── -->
   <nav class="home-nav">
-    <a href="/driving" class="nav-btn nav-primary">
+    <a href="/driving" class="nav-btn nav-drive">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
         <circle cx="12" cy="12" r="10"/>
         <polygon points="10,8 16,12 10,16" fill="currentColor" stroke="none"/>
       </svg>
-      DRIVING
+      DRIVE
     </a>
-    <a href="/" class="nav-btn">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round">
-        <polyline points="22,12 18,12 15,21 9,3 6,12 2,12"/>
-      </svg>
-      ROUTES
-    </a>
-    <a href="/settings" class="nav-btn">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
-        <circle cx="12" cy="12" r="3"/>
-        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
-      </svg>
-      SETTINGS
-    </a>
+    <div class="nav-secondary">
+      <a href="/" class="nav-btn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round">
+          <polyline points="22,12 18,12 15,21 9,3 6,12 2,12"/>
+        </svg>
+        ROUTES
+      </a>
+      <a href="/settings" class="nav-btn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="3"/>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+        </svg>
+        SETTINGS
+      </a>
+    </div>
   </nav>
 
 </div>
 
 <style>
-  /* ── Tokens ──────────────────────────────────────────────────────────────── */
+  /* ── Design tokens ───────────────────────────────────────────────────────── */
   :root {
-    --bg:        #06090f;
-    --surface:   #0c1422;
-    --border:    rgba(0, 229, 255, 0.09);
-    --cyan:      #00e5ff;
-    --green:     #00ff87;
-    --amber:     #ffb300;
-    --red:       #ff3d3d;
-    --purple:    #bf6dff;
-    --txt:       #edf6fa;
-    --muted:     rgba(255,255,255,0.38);
+    --bg:        #080b10;
+    --surface:   #0e1520;
+    --surface2:  #131c2b;
+    --border:    rgba(247,183,49,0.10);
+    --amber:     #f7b731;
+    --green:     #00ff94;
+    --red:       #ff4842;
+    --purple:    #b06bff;
+    --txt:       #f0f4f8;
+    --muted:     rgba(255,255,255,0.36);
     --dim:       rgba(255,255,255,0.14);
     --font-ui:   'Rajdhani', system-ui, sans-serif;
-    --font-data: 'Share Tech Mono', 'Consolas', monospace;
+    --font-data: 'Oxanium', 'Consolas', monospace;
   }
 
   /* ── Page shell ──────────────────────────────────────────────────────────── */
@@ -597,29 +598,35 @@
     overflow: hidden;
   }
 
-  /* Ambient radial glow — gives depth without distraction */
-  .ambient {
+  /* Angled grid background — gives structural depth */
+  .bg-layer {
     position: fixed;
     inset: 0;
     pointer-events: none;
     z-index: 0;
     background:
-      radial-gradient(ellipse 70% 35% at 50% -5%, rgba(0,229,255,0.05) 0%, transparent 70%),
-      radial-gradient(ellipse 45% 55% at 92% 85%, rgba(191,109,255,0.04) 0%, transparent 60%);
+      radial-gradient(ellipse 80% 50% at 50% -10%, rgba(247,183,49,0.04) 0%, transparent 65%),
+      radial-gradient(ellipse 40% 60% at 95% 90%,  rgba(176,107,255,0.04) 0%, transparent 55%);
   }
 
-  /* Subtle scanlines — automotive instrument feel */
-  .ambient::after {
+  /* Diagonal grid overlay */
+  .bg-layer::before {
     content: '';
     position: absolute;
     inset: 0;
-    background-image: repeating-linear-gradient(
-      0deg,
-      transparent 0px,
-      transparent 3px,
-      rgba(0,0,0,0.12) 3px,
-      rgba(0,0,0,0.12) 4px
-    );
+    background-image:
+      linear-gradient(rgba(255,255,255,0.018) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,0.018) 1px, transparent 1px);
+    background-size: 32px 32px;
+    mask-image: radial-gradient(ellipse 90% 80% at 50% 40%, black 30%, transparent 80%);
+  }
+
+  /* Subtle vignette */
+  .bg-layer::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(ellipse 100% 100% at 50% 50%, transparent 50%, rgba(8,11,16,0.65) 100%);
   }
 
   /* ── Header ──────────────────────────────────────────────────────────────── */
@@ -629,30 +636,48 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 0.9rem 1.125rem 0.7rem;
-    border-bottom: 1px solid rgba(0,229,255,0.07);
+    padding: 0.8rem 1rem 0.65rem;
+    border-bottom: 1px solid rgba(247,183,49,0.08);
   }
 
   .brand {
     display: flex;
-    align-items: baseline;
+    align-items: center;
     gap: 0.55rem;
   }
 
+  .brand-mark {
+    width: 1.5rem;
+    height: 0.95rem;
+    color: var(--amber);
+    filter: drop-shadow(0 0 6px rgba(247,183,49,0.5));
+    flex-shrink: 0;
+  }
+  .brand-mark svg { width: 100%; height: 100%; }
+
+  .brand-text {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    line-height: 1;
+  }
+
   .brand-name {
-    font-family: var(--font-ui);
-    font-size: 1.1rem;
-    font-weight: 700;
-    letter-spacing: 0.12em;
-    color: var(--cyan);
-    text-shadow: 0 0 20px rgba(0,229,255,0.35);
+    font-family: var(--font-data);
+    font-size: 1rem;
+    font-weight: 800;
+    letter-spacing: 0.14em;
+    color: var(--amber);
+    text-shadow: 0 0 24px rgba(247,183,49,0.35);
   }
 
   .brand-ver {
     font-family: var(--font-data);
-    font-size: 0.65rem;
+    font-size: 0.58rem;
+    font-weight: 400;
     color: var(--muted);
-    letter-spacing: 0.04em;
+    letter-spacing: 0.05em;
+    margin-top: 1px;
   }
 
   .header-actions {
@@ -662,35 +687,47 @@
   }
 
   .update-badge {
-    font-size: 0.6rem;
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    font-family: var(--font-data);
+    font-size: 0.58rem;
     font-weight: 700;
-    letter-spacing: 0.08em;
-    color: #000;
-    background: var(--cyan);
-    padding: 0.15rem 0.45rem;
-    border-radius: 2px;
-    animation: badge-pulse 2s ease-in-out infinite;
+    letter-spacing: 0.1em;
+    color: var(--bg);
+    background: var(--amber);
+    padding: 0.2rem 0.5rem;
+    border-radius: 3px;
+    text-decoration: none;
+    animation: badge-flash 2.5s ease-in-out infinite;
   }
-  @keyframes badge-pulse {
+  .update-dot {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: rgba(0,0,0,0.5);
+    flex-shrink: 0;
+  }
+  @keyframes badge-flash {
     0%, 100% { opacity: 1; }
-    50%       { opacity: 0.7; }
+    50%       { opacity: 0.72; }
   }
 
   .icon-btn {
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 2.1rem;
-    height: 2.1rem;
+    width: 2rem;
+    height: 2rem;
     border-radius: 6px;
     color: var(--muted);
     background: rgba(255,255,255,0.04);
     border: 1px solid rgba(255,255,255,0.06);
     text-decoration: none;
-    transition: color 0.15s, background 0.15s;
+    transition: color 0.12s, background 0.12s;
   }
-  .icon-btn svg { width: 1rem; height: 1rem; }
-  .icon-btn:active { background: rgba(0,229,255,0.1); color: var(--cyan); }
+  .icon-btn svg { width: 0.95rem; height: 0.95rem; }
+  .icon-btn:active { background: rgba(247,183,49,0.1); color: var(--amber); }
 
   /* ── Main ────────────────────────────────────────────────────────────────── */
   .home-content {
@@ -699,8 +736,8 @@
     flex: 1;
     display: flex;
     flex-direction: column;
-    gap: 0.6rem;
-    padding: 0.75rem 0.875rem 0.5rem;
+    gap: 0.55rem;
+    padding: 0.65rem 0.875rem 0.4rem;
     overflow-y: auto;
   }
 
@@ -711,231 +748,221 @@
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 1rem;
+    gap: 0.9rem;
   }
 
   .spinner {
-    width: 2rem;
-    height: 2rem;
-    border: 1.5px solid rgba(0,229,255,0.12);
-    border-top-color: var(--cyan);
+    width: 1.8rem;
+    height: 1.8rem;
+    border: 1.5px solid rgba(247,183,49,0.12);
+    border-top-color: var(--amber);
     border-radius: 50%;
     animation: spin 0.9s linear infinite;
   }
   @keyframes spin { to { transform: rotate(360deg); } }
 
   .loading-label {
-    font-size: 0.65rem;
-    letter-spacing: 0.2em;
+    font-family: var(--font-data);
+    font-size: 0.6rem;
+    letter-spacing: 0.22em;
     color: var(--dim);
     font-weight: 600;
   }
 
-  /* ── Status strip ────────────────────────────────────────────────────────── */
-  .status-strip {
+  /* ── Status bar ──────────────────────────────────────────────────────────── */
+  .status-bar {
     display: flex;
     align-items: center;
-    gap: 0.75rem;
-    padding: 0.6rem 0.875rem;
+    justify-content: space-between;
+    padding: 0.5rem 0.8rem;
     background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: 10px;
+    border-radius: 9px;
   }
 
-  .status-ready {
+  .status-left {
     display: flex;
     align-items: center;
-    gap: 0.45rem;
-    flex: 1;
+    gap: 0.42rem;
   }
 
-  .ready-dot {
+  .status-pip {
     display: block;
-    width: 0.55rem;
-    height: 0.55rem;
+    width: 0.5rem;
+    height: 0.5rem;
     border-radius: 50%;
+    background: var(--dim);
+    flex-shrink: 0;
+    transition: background 0.3s;
+  }
+  .status-pip.live {
     background: var(--green);
     box-shadow: 0 0 6px var(--green);
-    animation: ready-pulse 2.8s ease-in-out infinite;
-    flex-shrink: 0;
+    animation: pip-breathe 3s ease-in-out infinite;
   }
-  @keyframes ready-pulse {
-    0%, 100% { box-shadow: 0 0 4px var(--green); opacity: 1; }
-    50%       { box-shadow: 0 0 12px var(--green); opacity: 0.85; }
+  @keyframes pip-breathe {
+    0%, 100% { box-shadow: 0 0 4px var(--green); }
+    50%       { box-shadow: 0 0 10px var(--green); }
   }
 
-  .ready-label {
-    font-size: 0.82rem;
+  .status-text {
+    font-family: var(--font-data);
+    font-size: 0.72rem;
     font-weight: 700;
-    letter-spacing: 0.1em;
-    color: var(--green);
+    letter-spacing: 0.12em;
+    color: var(--muted);
+    transition: color 0.3s;
   }
+  .status-text.live { color: var(--green); }
 
-  .status-indicators {
+  .status-right {
     display: flex;
     align-items: center;
-    gap: 0.4rem;
+    gap: 0.35rem;
+  }
+
+  .sig-canvas { display: block; width: 38px; height: 44px; }
+  .sig-divider {
+    width: 1px;
+    height: 28px;
+    background: rgba(255,255,255,0.08);
     flex-shrink: 0;
   }
 
-  .indicator-canvas { display: block; }
-  .net-canvas { width: 42px; height: 46px; }
-  .gps-canvas { width: 42px; height: 46px; }
-
-  /* ── Instrument panel ────────────────────────────────────────────────────── */
-  .instrument-panel {
+  /* ── Instrument cluster ──────────────────────────────────────────────────── */
+  .cluster {
+    display: flex;
+    gap: 0.5rem;
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: 12px;
-    padding: 0.7rem 0.75rem 0.6rem;
+    padding: 0.6rem 0.6rem 0.45rem;
   }
 
-  .panel-eyebrow {
-    display: flex;
-    align-items: center;
-    gap: 0.6rem;
-    margin-bottom: 0.55rem;
-  }
-
-  .eyebrow-line {
-    flex: 1;
-    height: 1px;
-    background: rgba(0,229,255,0.12);
-  }
-
-  .eyebrow-text {
-    font-size: 0.6rem;
-    font-weight: 700;
-    letter-spacing: 0.18em;
-    color: rgba(0,229,255,0.45);
-    white-space: nowrap;
-  }
-
-  .instruments {
-    display: flex;
-    gap: 0.5rem;
-    align-items: center;
-  }
-
-  .temp-wrap {
-    flex: 1;
+  .cluster-temp {
+    flex: 1.15;
     min-width: 0;
   }
 
   .temp-canvas {
     display: block;
     width: 100%;
-    aspect-ratio: 1 / 0.88;
+    aspect-ratio: 1 / 0.86;
   }
 
-  .rings-col {
+  .cluster-rings {
     display: flex;
     flex-direction: column;
-    gap: 0.3rem;
+    gap: 0.2rem;
+    justify-content: space-between;
     flex-shrink: 0;
   }
 
   .ring-canvas {
     display: block;
-    width: 76px;
-    height: 82px;
+    width: 74px;
+    height: 80px;
   }
 
-  /* ── Stats panel ─────────────────────────────────────────────────────────── */
-  .stats-panel {
+  /* ── Stats card ──────────────────────────────────────────────────────────── */
+  .stats-card {
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: 10px;
-    padding: 0.65rem 0.875rem;
+    padding: 0.6rem 0.875rem 0.65rem;
   }
 
-  .stats-eyebrow {
-    font-size: 0.58rem;
-    font-weight: 700;
-    letter-spacing: 0.16em;
+  .stats-label {
+    font-family: var(--font-data);
+    font-size: 0.56rem;
+    font-weight: 600;
+    letter-spacing: 0.18em;
     color: var(--muted);
-    margin-bottom: 0.45rem;
+    margin-bottom: 0.5rem;
   }
 
-  .stats-row {
+  .stats-grid {
     display: flex;
     align-items: center;
-    gap: 0;
   }
 
-  .stat-block {
+  .stat {
     flex: 1;
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 0.15rem;
+    gap: 0.12rem;
   }
 
   .stat-val {
     font-family: var(--font-data);
-    font-size: 1.35rem;
+    font-size: 1.4rem;
+    font-weight: 700;
     color: var(--txt);
     line-height: 1;
-    letter-spacing: -0.02em;
+    letter-spacing: -0.01em;
   }
 
-  .stat-lbl {
-    font-size: 0.56rem;
+  .stat-key {
+    font-family: var(--font-ui);
+    font-size: 0.54rem;
     font-weight: 600;
-    letter-spacing: 0.12em;
+    letter-spacing: 0.13em;
     color: var(--dim);
   }
 
-  .stat-sep {
+  .stat-line {
     width: 1px;
-    height: 2rem;
-    background: rgba(0,229,255,0.1);
+    height: 2.2rem;
+    background: rgba(247,183,49,0.1);
     flex-shrink: 0;
   }
 
-  /* ── Storage panel ───────────────────────────────────────────────────────── */
-  .storage-panel {
+  /* ── Storage card ────────────────────────────────────────────────────────── */
+  .storage-card {
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: 10px;
-    padding: 0.65rem 0.875rem;
+    padding: 0.6rem 0.875rem;
   }
 
-  .storage-head {
+  .storage-meta {
     display: flex;
     align-items: baseline;
     gap: 0.4rem;
-    margin-bottom: 0.55rem;
+    margin-bottom: 0.52rem;
   }
 
-  .storage-lbl {
-    font-size: 0.6rem;
-    font-weight: 700;
+  .storage-key {
+    font-family: var(--font-data);
+    font-size: 0.56rem;
+    font-weight: 600;
     letter-spacing: 0.16em;
     color: var(--muted);
     flex: 1;
   }
 
-  .storage-num {
+  .storage-val {
     font-family: var(--font-data);
-    font-size: 0.78rem;
+    font-size: 0.76rem;
+    font-weight: 600;
     color: var(--txt);
   }
-  .storage-unit { color: var(--muted); }
+  .storage-of { color: var(--muted); font-weight: 400; }
 
   .storage-pct {
     font-family: var(--font-data);
     font-size: 0.68rem;
-    color: var(--cyan);
-    min-width: 2.5rem;
+    color: var(--amber);
+    min-width: 2.4rem;
     text-align: right;
   }
-  .storage-pct.warn { color: var(--amber); }
+  .storage-pct.warn { color: #ff9500; }
   .storage-pct.crit { color: var(--red); }
 
   .storage-track {
     position: relative;
-    height: 5px;
+    height: 4px;
     background: rgba(255,255,255,0.06);
     border-radius: 2px;
     overflow: visible;
@@ -943,20 +970,20 @@
 
   .storage-fill {
     height: 100%;
-    background: var(--cyan);
+    background: var(--amber);
     border-radius: 2px;
-    box-shadow: 0 0 6px rgba(0,229,255,0.4);
-    transition: width 0.6s ease;
+    box-shadow: 0 0 7px rgba(247,183,49,0.45);
+    transition: width 0.7s ease;
   }
-  .storage-fill.warn { background: var(--amber); box-shadow: 0 0 6px rgba(255,179,0,0.4); }
-  .storage-fill.crit { background: var(--red);   box-shadow: 0 0 6px rgba(255,61,61,0.4); }
+  .storage-fill.warn { background: #ff9500; box-shadow: 0 0 7px rgba(255,149,0,0.45); }
+  .storage-fill.crit { background: var(--red); box-shadow: 0 0 7px rgba(255,72,66,0.45); }
 
-  .storage-mark {
+  .storage-notch {
     position: absolute;
     top: -2px;
     width: 1px;
-    height: 9px;
-    background: rgba(0,0,0,0.6);
+    height: 8px;
+    background: rgba(0,0,0,0.7);
     transform: translateX(-50%);
     pointer-events: none;
   }
@@ -965,40 +992,62 @@
   .home-nav {
     position: relative;
     z-index: 1;
-    display: grid;
-    grid-template-columns: 1fr 1fr 1fr;
+    display: flex;
     gap: 0.45rem;
-    padding: 0.6rem 0.875rem calc(0.6rem + env(safe-area-inset-bottom, 0px));
-    border-top: 1px solid rgba(0,229,255,0.07);
-    background: rgba(6,9,15,0.95);
+    align-items: stretch;
+    padding: 0.55rem 0.875rem calc(0.55rem + env(safe-area-inset-bottom, 0px));
+    border-top: 1px solid rgba(247,183,49,0.07);
+    background: rgba(8,11,16,0.96);
   }
 
-  .nav-btn {
+  .nav-drive {
+    flex: 1.4;
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 0.25rem;
-    padding: 0.55rem 0.4rem;
-    border-radius: 8px;
+    gap: 0.22rem;
+    padding: 0.6rem 0.5rem;
+    border-radius: 9px;
+    font-family: var(--font-data);
+    font-size: 0.65rem;
+    font-weight: 800;
+    letter-spacing: 0.14em;
+    color: var(--bg);
+    background: var(--amber);
+    border: none;
+    text-decoration: none;
+    box-shadow: 0 0 18px rgba(247,183,49,0.25), 0 2px 8px rgba(0,0,0,0.4);
+    transition: box-shadow 0.15s, transform 0.12s;
+  }
+  .nav-drive svg { width: 1.15rem; height: 1.15rem; }
+  .nav-drive:active { box-shadow: 0 0 26px rgba(247,183,49,0.4); transform: scale(0.97); }
+
+  .nav-secondary {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+  }
+
+  .nav-btn {
+    flex: 1;
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4rem;
+    padding: 0.4rem 0.5rem;
+    border-radius: 7px;
     font-family: var(--font-ui);
-    font-size: 0.62rem;
+    font-size: 0.64rem;
     font-weight: 700;
     letter-spacing: 0.1em;
     color: var(--muted);
-    background: rgba(255,255,255,0.03);
-    border: 1px solid rgba(255,255,255,0.05);
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.06);
     text-decoration: none;
-    transition: background 0.15s, color 0.15s;
+    transition: background 0.12s, color 0.12s;
   }
-  .nav-btn svg { width: 1.15rem; height: 1.15rem; }
-  .nav-btn:active { background: rgba(255,255,255,0.09); }
-
-  .nav-primary {
-    color: var(--cyan);
-    background: rgba(0,229,255,0.06);
-    border-color: rgba(0,229,255,0.18);
-    text-shadow: 0 0 12px rgba(0,229,255,0.4);
-  }
-  .nav-primary svg { filter: drop-shadow(0 0 4px rgba(0,229,255,0.5)); }
-  .nav-primary:active { background: rgba(0,229,255,0.14); }
+  .nav-btn svg { width: 0.9rem; height: 0.9rem; flex-shrink: 0; }
+  .nav-btn:active { background: rgba(255,255,255,0.09); color: var(--txt); }
 </style>

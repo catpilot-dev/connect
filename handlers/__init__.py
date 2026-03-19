@@ -106,6 +106,7 @@ from .ssh_keys import (
     handle_ssh_keys_get,
     handle_ssh_keys_set,
     handle_ssh_keys_delete,
+    handle_ice_servers,
     handle_webrtc,
     handle_webrtc_health,
 )

@@ -118,6 +118,7 @@ from handlers import (
     handle_ssh_keys_get,
     handle_ssh_keys_set,
     handle_ssh_keys_delete,
+    handle_ice_servers,
     handle_webrtc,
     handle_webrtc_health,
     handle_driving_ws,
@@ -328,6 +329,7 @@ def create_app(data_dir: str, static_dir: str) -> web.Application:
     app.router.add_post("/v1/ssh-keys", handle_ssh_keys_set)
     app.router.add_delete("/v1/ssh-keys", handle_ssh_keys_delete)
 
+    app.router.add_get("/api/ice-servers", handle_ice_servers)
     app.router.add_post("/api/webrtc", handle_webrtc)
     app.router.add_get("/api/webrtc/health", handle_webrtc_health)
 
@@ -365,10 +367,10 @@ def main():
     parser = argparse.ArgumentParser(description="Connect on Device - comma-compatible local server")
     parser.add_argument("--data-dir", default=DEFAULT_DATA_DIR,
                         help=f"Route data directory (default: {DEFAULT_DATA_DIR})")
-    parser.add_argument("--port", type=int, default=DEFAULT_PORT,
-                        help=f"Server port (default: {DEFAULT_PORT})")
-    parser.add_argument("--host", default="0.0.0.0",
-                        help="Bind address (default: 0.0.0.0)")
+    parser.add_argument("--port", type=int, default=80,
+                        help="Server port (default: 80)")
+    parser.add_argument("--host", default=None,
+                        help="Bind address (default: 0.0.0.0 + :: for dual-stack)")
     parser.add_argument("--static-dir", default=None,
                         help="Static files directory (default: ./static next to server.py)")
     args = parser.parse_args()
@@ -377,13 +379,17 @@ def main():
 
     static_dir = args.static_dir or str(Path(__file__).parent / "static")
 
+    # Listen on both IPv4 and IPv6 by default so hotspot (IPv6-only carriers)
+    # and LAN (IPv4) both work.  A single explicit --host overrides to that only.
+    host = args.host or ["0.0.0.0", "::"]
+
     logger.info("Starting Connect on Device (comma-compatible API)")
     logger.info("  Data dir:   %s", args.data_dir)
     logger.info("  Static dir: %s", static_dir)
-    logger.info("  Listening:  http://%s:%d", args.host, args.port)
+    logger.info("  Listening:  http://*:%d  (IPv4 + IPv6)", args.port)
 
     app = create_app(args.data_dir, static_dir)
-    web.run_app(app, host=args.host, port=args.port, print=None)
+    web.run_app(app, host=host, port=args.port, print=None)
 
 
 if __name__ == "__main__":

@@ -16,6 +16,7 @@
   let retryTimer = null
   let fullscreen = $state(false)
 
+
   // Telemetry from dashboard WS
   let telemetry = $state({
     vEgo: 0,
@@ -67,24 +68,30 @@
     if (!health.ok) {
       error = health.reason
       errorDetail = 'webrtcd must be running (onroad only). Will retry automatically.'
-      console.error('[Driving] health check failed:', health.reason)
       scheduleRetry()
       return
     }
 
-    const rtc = new RTCPeerConnection({
-      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
-    })
+    // Fetch ICE config from backend — it returns TURN with the device's actual
+    // IP address (not cateye.local).  Safari's ICE engine can't resolve .local
+    // mDNS names for TURN, so we must use the raw IP.
+    let iceServers = [
+      { urls: 'stun:stun.chat.bilibili.com:3478' },
+      { urls: 'stun:stun.l.google.com:19302' },
+    ]
+    try {
+      const cfg = await fetch('/api/ice-servers').then(r => r.json())
+      if (cfg.iceServers) iceServers = cfg.iceServers
+    } catch {}
+    const rtc = new RTCPeerConnection({ iceServers })
     pc = rtc
 
     rtc.onconnectionstatechange = () => {
-      console.log('[Driving] WebRTC state:', rtc.connectionState)
       connected = rtc.connectionState === 'connected'
-      if (connected) retryCount = 0  // reset backoff on success
+      if (connected) retryCount = 0
       if (rtc.connectionState === 'failed') {
         error = 'WebRTC connection failed (ICE)'
         errorDetail = 'Network path between phone and device failed. Check WiFi/hotspot.'
-        console.error('[Driving] ICE connection failed')
         scheduleRetry()
       }
       if (rtc.connectionState === 'disconnected') {
@@ -97,28 +104,30 @@
     rtc.addTransceiver('video', { direction: 'recvonly' })
 
     rtc.ontrack = (ev) => {
-      console.log('[Driving] ontrack:', ev.track.kind)
       const stream = ev.streams[0] || new MediaStream([ev.track])
-      if (videoEl) {
+      const attach = () => {
+        if (!videoEl) { setTimeout(attach, 50); return }
         videoEl.srcObject = stream
-        videoEl.play().catch(e => console.error('[Driving] play error:', e))
+        videoEl.play().catch(() => {})
       }
+      attach()
     }
 
-    // Create offer and gather ICE candidates
+    // Create offer and wait for ICE gathering.
+    // Give TURN relay allocation up to 15s (STUN resolves quickly but TURN can
+    // take 3-10s on iPhone hotspot). iceGatheringState→'complete' fires early
+    // when both STUN and TURN finish; the 15s setTimeout is only a safety net.
     const offer = await rtc.createOffer()
     await rtc.setLocalDescription(offer)
-
-    // Wait for ICE gathering (LAN = instant, timeout 3s)
     await new Promise((resolve) => {
       if (rtc.iceGatheringState === 'complete') { resolve(); return }
-      const timer = setTimeout(resolve, 3000)
+      const timer = setTimeout(resolve, 15000)
       rtc.onicegatheringstatechange = () => {
         if (rtc.iceGatheringState === 'complete') { clearTimeout(timer); resolve() }
       }
     })
 
-    // Exchange SDP with webrtcd via COD proxy
+    // Exchange SDP with webrtcd via COD proxy (server-side strips srflx when same subnet)
     try {
       const answer = await liveStreamOffer(rtc.localDescription.sdp)
       await rtc.setRemoteDescription(new RTCSessionDescription(answer))

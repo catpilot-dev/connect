@@ -52,6 +52,9 @@ BUILD_HASH_FILE = "/tmp/plugin_build_hash"
 # Plugind internal API
 PLUGIND_API_URL = os.getenv("PLUGIND_API_URL", "http://127.0.0.1:8083")
 
+# Device identity
+DEVICE_HOSTNAME = os.getenv("DEVICE_HOSTNAME", "cateye")  # advertised via mDNS as cateye.local
+
 
 def ensure_openpilot_in_path():
     """Add OPENPILOT_DIR to sys.path if not already present."""

@@ -106,6 +106,37 @@
     }
   }
 
+  function autoNavigate(onroad) {
+    if (onroad && page !== 'driving') {
+      page = 'driving'
+      history.replaceState(null, '', '/driving')
+    } else if (!onroad && (page === 'driving' || page === 'routes')) {
+      page = 'home'
+      history.replaceState(null, '', '/home')
+    }
+  }
+
+  function startOnroadWatcher() {
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws'
+    let ws
+    function connect() {
+      ws = new WebSocket(`${proto}://${location.host}/ws/home`)
+      ws.onmessage = (e) => {
+        try {
+          const msg = JSON.parse(e.data)
+          if (msg.type === 'device' && 'isOnroad' in msg) {
+            const wasOnroad = isOnroad
+            isOnroad = msg.isOnroad
+            if (isOnroad !== wasOnroad) autoNavigate(isOnroad)
+          }
+        } catch {}
+      }
+      ws.onclose = () => setTimeout(connect, 3000)
+    }
+    connect()
+    return () => ws?.close()
+  }
+
   onMount(async () => {
     // Fetch all startup data in parallel
     const [onroadResult, devicesResult, paramsResult, updatesResult] = await Promise.allSettled([
@@ -127,16 +158,9 @@
       updates = updatesResult.value
     }
 
-    // Restore state from URL on load
+    // Initial navigation based on onroad state
     page = parsePage()
-    // Auto-navigate: onroad → driving, offroad default → home
-    if (isOnroad && (page === 'routes' || page === 'home')) {
-      page = 'driving'
-      history.replaceState(null, '', '/driving')
-    } else if (!isOnroad && page === 'routes') {
-      page = 'home'
-      history.replaceState(null, '', '/home')
-    }
+    autoNavigate(isOnroad)
     const initialRoute = parseRoutePath()
     if (initialRoute) selectedRoute.set(initialRoute)
 
@@ -165,7 +189,8 @@
 
     const stopWakeLock = startWakeLock()
     const stopGps = startGpsSender()
-    return () => { unsub(); if (stopWakeLock) stopWakeLock(); if (stopGps) stopGps() }
+    const stopOnroadWatcher = startOnroadWatcher()
+    return () => { unsub(); if (stopWakeLock) stopWakeLock(); if (stopGps) stopGps(); stopOnroadWatcher() }
   })
 
   function showHome() {

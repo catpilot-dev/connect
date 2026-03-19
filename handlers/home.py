@@ -68,6 +68,7 @@ def _home_poller(latest, stop_event):
                 "memoryUsagePct": int(ds.memoryUsagePercent),
                 "freeSpacePct": round(float(ds.freeSpacePercent), 1),
                 "fanSpeedPct": int(ds.fanSpeedPercentDesired),
+                "isOnroad": bool(ds.started),
             }
 
         if sm.updated["gpsLocationExternal"]:
