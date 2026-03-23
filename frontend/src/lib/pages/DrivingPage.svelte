@@ -157,6 +157,68 @@
     connected = false
   }
 
+  // ── MJPEG stream mode (STREAM_UI=1 on device) ──
+  // Canvas-based polling works on iOS Safari (native multipart MJPEG img does not).
+  let streamEl = $state(null)          // canvas for MJPEG display
+  let streamMode = $state(false)       // true when device is in STREAM_UI mode
+  let streamConnected = $state(false)
+  let streamPollTimer = null
+
+  async function checkStreamMode() {
+    try {
+      const res = await fetch('/stream/ui/frame', { method: 'HEAD' })
+      return res.ok
+    } catch {
+      return false
+    }
+  }
+
+  async function startMjpegStream() {
+    streamMode = await checkStreamMode()
+    if (!streamMode) return
+
+    streamConnected = false
+
+    async function pollFrame() {
+      if (!streamMode) return
+      try {
+        const res = await fetch(`/stream/ui/frame?t=${Date.now()}`)
+        if (!res.ok) {
+          streamConnected = false
+          streamPollTimer = setTimeout(pollFrame, 500)
+          return
+        }
+        const blob = await res.blob()
+        const url = URL.createObjectURL(blob)
+        const img = new Image()
+        img.onload = () => {
+          if (streamEl) {
+            const ctx = streamEl.getContext('2d')
+            streamEl.width = img.naturalWidth
+            streamEl.height = img.naturalHeight
+            ctx.drawImage(img, 0, 0)
+          }
+          URL.revokeObjectURL(url)
+          streamConnected = true
+        }
+        img.onerror = () => { URL.revokeObjectURL(url) }
+        img.src = url
+      } catch {
+        streamConnected = false
+      }
+      // ~10fps (100ms interval); device encoder runs at ~10fps
+      streamPollTimer = setTimeout(pollFrame, 100)
+    }
+
+    pollFrame()
+  }
+
+  function stopMjpegStream() {
+    if (streamPollTimer) { clearTimeout(streamPollTimer); streamPollTimer = null }
+    streamMode = false
+    streamConnected = false
+  }
+
   // ── WebSocket: telemetry + model data ──
   function connectTelemetry() {
     const proto = location.protocol === 'https:' ? 'wss' : 'ws'
@@ -398,7 +460,10 @@
   let animFrame
 
   onMount(() => {
-    connectWebRTC()
+    // Check if device is in STREAM_UI mode; if so, use canvas MJPEG instead of WebRTC
+    startMjpegStream().then(() => {
+      if (!streamMode) connectWebRTC()
+    })
     connectTelemetry()
 
     // Keep canvas sized to video
@@ -433,6 +498,7 @@
     if (retryTimer) { clearTimeout(retryTimer); retryTimer = null }
     disconnectWebRTC()
     disconnectTelemetry()
+    stopMjpegStream()
     if (resizeObserver) resizeObserver.disconnect()
     if (animFrame) cancelAnimationFrame(animFrame)
   })
@@ -441,27 +507,37 @@
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="driving-container" onclick={handleVideoTap}>
-  <!-- Video layer (WebRTC camera feed) -->
-  <!-- svelte-ignore a11y_media_has_caption -->
-  <video
-    bind:this={videoEl}
-    class="driving-video"
-    autoplay
-    muted
-    playsinline
-  ></video>
 
-  <!-- HUD overlay canvas -->
-  <canvas
-    bind:this={canvasEl}
-    class="driving-canvas"
-  ></canvas>
+  {#if streamMode}
+    <!-- STREAM_UI mode: device UI MJPEG via canvas polling (works on iOS Safari) -->
+    <canvas
+      bind:this={streamEl}
+      class="driving-video"
+      style="object-fit:contain; background:#000;"
+    ></canvas>
+  {:else}
+    <!-- WebRTC camera feed -->
+    <!-- svelte-ignore a11y_media_has_caption -->
+    <video
+      bind:this={videoEl}
+      class="driving-video"
+      autoplay
+      muted
+      playsinline
+    ></video>
 
-  <!-- Connection status overlay (shown when not connected) -->
-  {#if !connected}
+    <!-- HUD overlay canvas (only in WebRTC mode — STREAM_UI includes HUD already) -->
+    <canvas
+      bind:this={canvasEl}
+      class="driving-canvas"
+    ></canvas>
+  {/if}
+
+  <!-- Connection status overlay -->
+  {#if streamMode ? !streamConnected : !connected}
     <div class="driving-overlay">
       <div class="status-card">
-        {#if error}
+        {#if !streamMode && error}
           <p class="error-title">{error}</p>
           {#if errorDetail}
             <p class="error-detail">{errorDetail}</p>
@@ -478,14 +554,14 @@
           </button>
         {:else}
           <div class="spinner"></div>
-          <p class="text-surface-300 mt-3">Connecting to camera...</p>
+          <p class="text-surface-300 mt-3">{streamMode ? 'Connecting to device UI...' : 'Connecting to camera...'}</p>
         {/if}
       </div>
     </div>
   {/if}
 
-  <!-- Tap to fullscreen hint (shown briefly when not fullscreen) -->
-  {#if connected && !fullscreen}
+  <!-- Tap to fullscreen hint -->
+  {#if (streamMode ? streamConnected : connected) && !fullscreen}
     <div class="fullscreen-hint">
       Tap to go fullscreen
     </div>
@@ -493,13 +569,18 @@
 
   <!-- Bottom controls bar -->
   <div class="controls-bar" onclick={(e) => e.stopPropagation()}>
-    <!-- Connection indicators -->
     <div class="flex items-center gap-2">
-      <div class="indicator" class:indicator-ok={connected} class:indicator-err={!connected}></div>
-      <span class="text-xs text-surface-400">{connected ? 'Live' : 'No video'}</span>
+      <div class="indicator"
+        class:indicator-ok={streamMode ? streamConnected : connected}
+        class:indicator-err={streamMode ? !streamConnected : !connected}
+      ></div>
+      <span class="text-xs text-surface-400">
+        {streamMode
+          ? (streamConnected ? 'UI Stream' : 'No stream')
+          : (connected ? 'Live' : 'No video')}
+      </span>
     </div>
 
-    <!-- Fullscreen toggle -->
     <button class="btn-control" onclick={toggleFullscreen}>
       {#if fullscreen}
         <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">

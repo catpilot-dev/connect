@@ -123,6 +123,8 @@ from handlers import (
     handle_webrtc_health,
     handle_driving_ws,
     handle_home_ws,
+    handle_ui_stream,
+    handle_ui_stream_frame,
 )
 from hud_stream import HudStreamManager, is_available as hud_stream_available
 from route_store import DEFAULT_DATA_DIR, DEFAULT_PORT, RouteStore
@@ -342,6 +344,10 @@ def create_app(data_dir: str, static_dir: str) -> web.Application:
 
     # Home page (offroad device status WebSocket)
     app.router.add_get("/ws/home", handle_home_ws)
+
+    # UI MJPEG stream (STREAM_UI mode — phone display)
+    app.router.add_get("/stream/ui", handle_ui_stream)
+    app.router.add_get("/stream/ui/frame", handle_ui_stream_frame)
 
     # Signal browser (catalog + data extraction)
     app.router.add_get("/v1/route/{routeName}/signals/catalog", handle_signal_catalog)

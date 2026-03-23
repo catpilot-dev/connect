@@ -156,4 +156,6 @@ from .stubs import (
     handle_stub_error,
 )
 
+from .stream import handle_ui_stream, handle_ui_stream_frame
+
 from .spa import handle_spa
