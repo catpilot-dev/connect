@@ -47,7 +47,7 @@ def _rot_from_euler(rpy):
     ])
 
 
-def _build_car_space_transform(intrinsic, calib_rpy, canvas_w, canvas_h):
+def _build_car_space_transform(intrinsic, calib_rpy, canvas_w, canvas_h, zoom=1.1):
     """Build the 3x3 car-space → canvas-space transform matrix.
 
     Same algorithm as augmented_road_view.py _calc_frame_matrix:
@@ -56,6 +56,7 @@ def _build_car_space_transform(intrinsic, calib_rpy, canvas_w, canvas_h):
       final = video_transform @ calib_transform
 
     Output is in canvas pixel coordinates (0..canvas_w, 0..canvas_h).
+    zoom: 1.1 for stock UI rendering, 1.0 for raw camera (qcamera overlay).
     """
     device_from_calib = _rot_from_euler(calib_rpy)
     view_from_calib = _VIEW_FROM_DEVICE @ device_from_calib
@@ -65,7 +66,6 @@ def _build_car_space_transform(intrinsic, calib_rpy, canvas_w, canvas_h):
     kep = calib_transform @ np.array([1.0, 0.0, 0.0])
 
     cx, cy = intrinsic[0, 2], intrinsic[1, 2]
-    zoom = 1.1  # fcam zoom (same as stock UI)
 
     # Clamp vanishing point offset
     margin = 5
@@ -402,3 +402,242 @@ async def handle_driving_ws(request):
         logger.info("Driving WebSocket disconnected")
 
     return ws
+
+
+# ─── HUD data from recorded routes (qlogs) ──────────────────────────
+
+_HUD_DATA_CACHE = {}  # local_id → {seg → frames}
+
+
+def _extract_hud_segment(qlog_path: str, seg_num: int, calib_rpy=None, height=None):
+    """Extract model + telemetry frames from a single qlog segment.
+
+    Returns (frames, calib_rpy, height) where frames is a list of dicts
+    with time-indexed telemetry and pre-projected model polygons.
+    """
+    from log_parser import _iter_log
+
+    car_space_transform = None
+    path_offset_z = height or HEIGHT_INIT
+    if calib_rpy is not None:
+        car_space_transform = _build_car_space_transform(
+            C3_FCAM_INTRINSIC, calib_rpy, CANVAS_W, CANVAS_H, zoom=1.0,
+        )
+
+    frames = []
+    base_mono = None
+    last_cs = None
+    last_sd = None
+    last_cc = None
+    last_radar = None
+    frame_count = 0
+
+    try:
+        for ev in _iter_log(qlog_path):
+            if base_mono is None and ev.which() != "initData":
+                base_mono = ev.logMonoTime
+
+            w = ev.which()
+
+            if w == "liveCalibration":
+                calib = ev.liveCalibration
+                if len(calib.rpyCalib) == 3:
+                    calib_rpy = list(calib.rpyCalib)
+                    car_space_transform = _build_car_space_transform(
+                        C3_FCAM_INTRINSIC, calib_rpy, CANVAS_W, CANVAS_H, zoom=1.0,
+                    )
+                    if calib.height:
+                        path_offset_z = float(calib.height[0])
+                        height = path_offset_z
+
+            elif w == "carState":
+                cs = ev.carState
+                cruise = cs.cruiseState
+                # vCruiseCluster is the cluster display value (already in km/h)
+                # cruiseState.speed is the internal value (m/s) — not what the driver sees
+                v_cruise_cluster = float(cs.vCruiseCluster)
+                last_cs = {
+                    "vEgo": round(float(cs.vEgo), 3),
+                    "vEgoCluster": round(float(cs.vEgoCluster), 3),
+                    "steeringAngleDeg": round(float(cs.steeringAngleDeg), 2),
+                    "gasPressed": bool(cs.gasPressed),
+                    "brakePressed": bool(cs.brakePressed),
+                    "cruiseSpeed": round(float(cruise.speed), 2),
+                    "cruiseEnabled": bool(cruise.enabled),
+                    "vCruiseCluster": round(v_cruise_cluster, 1),
+                }
+
+            elif w == "carControl":
+                cc = ev.carControl
+                last_cc = {
+                    "steerCmd": round(float(cc.actuators.steeringAngleDeg), 4),
+                    "accelCmd": round(float(cc.actuators.accel), 4),
+                }
+
+            elif w == "selfdriveState":
+                sd = ev.selfdriveState
+                last_sd = {
+                    "sdState": str(sd.state),
+                    "sdEnabled": bool(sd.enabled),
+                    "alertText1": str(sd.alertText1),
+                    "alertText2": str(sd.alertText2),
+                    "alertType": str(sd.alertType),
+                    "alertStatus": sd.alertStatus.raw if hasattr(sd.alertStatus, 'raw') else int(sd.alertStatus),
+                    "alertSize": sd.alertSize.raw if hasattr(sd.alertSize, 'raw') else int(sd.alertSize),
+                }
+
+            elif w == "radarState":
+                rs = ev.radarState
+                if rs.leadOne and rs.leadOne.status:
+                    last_radar = {
+                        "dRel": float(rs.leadOne.dRel),
+                        "yRel": float(rs.leadOne.yRel),
+                        "vRel": float(rs.leadOne.vRel),
+                    }
+                else:
+                    last_radar = None
+
+            elif w == "modelV2" and car_space_transform is not None:
+                if base_mono is None:
+                    continue
+
+                # Downsample to ~5Hz (every 4th modelV2 at 20Hz)
+                frame_count += 1
+                if frame_count % 4 != 0:
+                    continue
+
+                t = seg_num * 60.0 + (ev.logMonoTime - base_mono) / 1e9
+                model = ev.modelV2
+
+                try:
+                    path_3d = np.array([model.position.x, model.position.y, model.position.z], dtype=np.float32).T
+                    lane_lines_3d = [np.array([ll.x, ll.y, ll.z], dtype=np.float32).T for ll in model.laneLines]
+                    lane_probs = [round(float(p), 3) for p in model.laneLineProbs]
+                    road_edges_3d = [np.array([re.x, re.y, re.z], dtype=np.float32).T for re in model.roadEdges]
+                    road_edge_stds = [round(float(s), 3) for s in model.roadEdgeStds]
+
+                    max_distance = float(np.clip(path_3d[-1, 0], MIN_DRAW_DISTANCE, MAX_DRAW_DISTANCE)) if path_3d.shape[0] > 0 else MAX_DRAW_DISTANCE
+                    max_idx = _get_path_length_idx(lane_lines_3d[0][:, 0] if lane_lines_3d else np.array([]), max_distance)
+
+                    lane_polygons = []
+                    for i, ll in enumerate(lane_lines_3d):
+                        poly = _map_line_to_polygon(car_space_transform, ll, 0.025 * (lane_probs[i] if i < len(lane_probs) else 0), 0.0, max_idx, max_distance, CANVAS_W, CANVAS_H)
+                        lane_polygons.append(poly)
+
+                    edge_polygons = [_map_line_to_polygon(car_space_transform, re, 0.025, 0.0, max_idx, max_distance, CANVAS_W, CANVAS_H) for re in road_edges_3d]
+
+                    path_max = max_distance
+                    lead_data = None
+                    if last_radar:
+                        lead_d = last_radar["dRel"] * 2.0
+                        path_max = float(np.clip(lead_d - min(lead_d * 0.35, 10.0), 0.0, max_distance))
+                        idx = _get_path_length_idx(path_3d[:, 0], last_radar["dRel"])
+                        z = float(path_3d[idx, 2]) if idx < len(path_3d) else 0.0
+                        lead_pt = _map_point_to_screen(car_space_transform, last_radar["dRel"], -last_radar["yRel"], z + path_offset_z, CANVAS_W, CANVAS_H)
+                        if lead_pt:
+                            lead_data = {"pt": lead_pt, "dRel": round(last_radar["dRel"], 1), "vRel": round(last_radar["vRel"], 1)}
+
+                    path_idx = _get_path_length_idx(path_3d[:, 0], path_max)
+                    path_polygon = _map_line_to_polygon(car_space_transform, path_3d, 0.9, path_offset_z, path_idx, path_max, CANVAS_W, CANVAS_H)
+
+                    frame = {"t": round(t, 2)}
+
+                    if last_cs:
+                        frame.update(last_cs)
+                    if last_cc:
+                        frame.update(last_cc)
+                    if last_sd:
+                        frame.update(last_sd)
+
+                    frame["model"] = {
+                        "laneLines": lane_polygons,
+                        "laneLineProbs": lane_probs,
+                        "roadEdges": edge_polygons,
+                        "roadEdgeStds": road_edge_stds,
+                        "path": path_polygon,
+                        "lead": lead_data,
+                    }
+                    frames.append(frame)
+
+                except Exception:
+                    pass
+
+    except Exception as e:
+        logger.warning("HUD segment extraction error for %s: %s", qlog_path, e)
+
+    return frames, calib_rpy, height
+
+
+def _extract_hud_data(store, fullname: str, start_seg: int, end_seg: int) -> list:
+    """Extract HUD frames for a range of segments. Uses cache."""
+    local_id = store.get_local_id(fullname)
+    if not local_id:
+        return []
+
+    if local_id not in _HUD_DATA_CACHE:
+        _HUD_DATA_CACHE[local_id] = {}
+    seg_cache = _HUD_DATA_CACHE[local_id]
+
+    all_frames = []
+    calib_rpy = None
+    height = None
+
+    # Check if earlier segments have calibration cached
+    for s in sorted(seg_cache.keys()):
+        if s < start_seg and seg_cache[s]:
+            # Use last frame's calibration as starting point
+            last = seg_cache[s][-1]
+            if "model" in last:
+                break
+
+    for seg in range(start_seg, end_seg + 1):
+        if seg in seg_cache:
+            all_frames.extend(seg_cache[seg])
+            continue
+
+        # Use rlog (not qlog) — modelV2 and liveCalibration are only in rlogs
+        qlog = store.resolve_segment_path(fullname, seg, "rlog.zst")
+        if not qlog:
+            qlog = store.resolve_segment_path(fullname, seg, "rlog")
+        if not qlog:
+            seg_cache[seg] = []
+            continue
+
+        frames, calib_rpy, height = _extract_hud_segment(str(qlog), seg, calib_rpy, height)
+        seg_cache[seg] = frames
+        all_frames.extend(frames)
+
+    return all_frames
+
+
+async def handle_hud_data(request):
+    """GET /v1/route/{routeName}/hud_data?start=0&end=60
+
+    Extract pre-projected HUD overlay data from qlogs for a time range.
+    Returns JSON array of time-indexed frames with telemetry + model polygons.
+    Cached per segment for fast subsequent requests.
+    """
+    from handler_helpers import get_route_or_404
+
+    route_name, route, store = get_route_or_404(request)
+    fullname = route["fullname"]
+
+    start = float(request.query.get("start", "0"))
+    end = float(request.query.get("end", "60"))
+
+    start_seg = int(start // 60)
+    end_seg = int(end // 60)
+    max_seg = route.get("maxqlog", 0)
+    end_seg = min(end_seg, max_seg)
+
+    loop = asyncio.get_event_loop()
+    frames = await loop.run_in_executor(
+        None, _extract_hud_data, store, fullname, start_seg, end_seg,
+    )
+
+    # Filter to requested time range
+    frames = [f for f in frames if start <= f["t"] <= end]
+
+    return web.json_response(frames, headers={
+        "Cache-Control": "public, max-age=86400",
+    })
