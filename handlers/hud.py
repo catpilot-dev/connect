@@ -24,7 +24,8 @@ from config import (COD_HUD_CACHE_DIR, COD_HLS_TMP_DIR,
 
 HUD_CACHE_DIR = Path(COD_HUD_CACHE_DIR)
 RENDER_HLS_DIR = Path(COD_HLS_TMP_DIR)
-RENDER_SCRIPT_DRM = Path(__file__).parent.parent / "render_clip_drm.py"
+RENDER_SCRIPT_HEADLESS = Path(__file__).parent.parent / "render_clip_headless.py"
+RENDER_SCRIPT_DRM = Path(__file__).parent.parent / "render_clip_drm.py"  # legacy fallback
 OPENPILOT_DIR = Path(_OPENPILOT_DIR_STR)
 REPLAY_BIN = Path(_REPLAY_BIN_STR)
 
@@ -100,18 +101,43 @@ async def _rebuild_replay_binary():
         return False
 
 
-async def _ensure_replay_binary():
-    """Check replay binary exists and is functional; rebuild if needed.
+_REPLAY_BACKUP = Path(__file__).parent.parent / "lib" / "replay"
 
-    Returns True if binary is available, False on build failure.
+
+async def _restore_replay_from_backup() -> bool:
+    """Copy replay binary from COD backup to openpilot tools dir."""
+    if not _REPLAY_BACKUP.is_file():
+        return False
+    try:
+        import shutil
+        REPLAY_BIN.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(str(_REPLAY_BACKUP), str(REPLAY_BIN))
+        REPLAY_BIN.chmod(0o755)
+        logger.info("Restored replay binary from backup")
+        return True
+    except Exception as e:
+        logger.warning("Failed to restore replay from backup: %s", e)
+        return False
+
+
+async def _ensure_replay_binary():
+    """Check replay binary exists and is functional; restore/rebuild if needed.
+
+    Returns True if binary is available, False on failure.
     """
     if not REPLAY_BIN.is_file():
-        logger.info("Replay binary missing, rebuilding...")
-        return await _rebuild_replay_binary()
+        logger.info("Replay binary missing, restoring from backup...")
+        if not await _restore_replay_from_backup():
+            logger.info("Backup not available, trying scons rebuild...")
+            return await _rebuild_replay_binary()
 
     if not await _verify_replay_binary():
-        logger.info("Replay binary broken, rebuilding...")
-        return await _rebuild_replay_binary()
+        logger.info("Replay binary broken, restoring from backup...")
+        if not await _restore_replay_from_backup():
+            return await _rebuild_replay_binary()
+        if not await _verify_replay_binary():
+            logger.info("Backup binary also broken, trying scons rebuild...")
+            return await _rebuild_replay_binary()
 
     return True
 
@@ -124,23 +150,28 @@ QUALITY_PRESETS_DRM = {
 }
 
 
-def _is_drm_available() -> bool:
-    """Check if DRM backend is available for recording.
+def _get_render_script() -> Path | None:
+    """Get the best available render script.
 
-    DRM mode requires:
-    1. raylib package installed (system venv)
-    2. The render_clip_drm.py script exists
-    3. The raylib UI script exists (selfdrive/ui/ui.py)
+    Prefers headless (no DRM master needed), falls back to DRM.
+    Requires raylib package and the UI script.
     """
     try:
         import raylib
     except ImportError:
-        return False
-    if not RENDER_SCRIPT_DRM.exists():
-        return False
+        return None
     if not (OPENPILOT_DIR / "selfdrive/ui/ui.py").is_file():
-        return False
-    return True
+        return None
+    if RENDER_SCRIPT_HEADLESS.exists():
+        return RENDER_SCRIPT_HEADLESS
+    if RENDER_SCRIPT_DRM.exists():
+        return RENDER_SCRIPT_DRM
+    return None
+
+
+def _is_drm_available() -> bool:
+    """Check if any render backend is available."""
+    return _get_render_script() is not None
 
 
 # ─── HUD pre-render endpoints ────────────────────────────────────────
@@ -243,7 +274,8 @@ async def handle_hud_prerender(request: web.Request) -> web.Response:
 
     # Determine python and script paths
     python_bin = PYTHON_BIN if os.path.isfile(PYTHON_BIN) else sys.executable
-    script = str(RENDER_SCRIPT_DRM)
+    render_script = _get_render_script()
+    script = str(render_script)
 
     # Extract route metadata for MP4 embedding
     route_date = ""
@@ -311,7 +343,7 @@ async def handle_hud_progress(request: web.Request) -> web.Response:
     if not task:
         return web.json_response({"status": "idle", "elapsed_sec": 0, "total_sec": 0})
 
-    # Read status from the status file written by render_clip_drm.py
+    # Read status from the status file written by the render script
     status_data = _read_status_file(task["status_file"])
     if status_data:
         # If subprocess says complete, verify the file exists
@@ -331,6 +363,68 @@ async def handle_hud_progress(request: web.Request) -> web.Response:
 
     duration = task["end"] - task["start"]
     return web.json_response({"status": "rendering", "elapsed_sec": 0, "total_sec": duration})
+
+
+async def handle_hud_render_preview(request: web.Request) -> web.StreamResponse:
+    """GET /v1/route/{routeName}/hud/preview — MJPEG stream of live render progress.
+
+    Streams the latest rendered frame as MJPEG while the headless renderer runs.
+    The renderer writes preview.jpg to the hud_cache dir every ~250ms.
+    """
+    import asyncio
+
+    route_name = resolve_route_name(request)
+    store = request.app["store"]
+    route = store.get_route(route_name)
+    fullname = route["fullname"] if route else route_name
+    task = _hud_prerender_tasks.get(fullname)
+
+    if not task:
+        raise web.HTTPNotFound(text="No render in progress")
+
+    preview_path = Path(task["status_file"]).parent / "preview.jpg"
+
+    response = web.StreamResponse(
+        status=200,
+        headers={
+            "Content-Type": "multipart/x-mixed-replace; boundary=renderframe",
+            "Cache-Control": "no-cache, no-store",
+            "Connection": "close",
+        },
+    )
+    await response.prepare(request)
+
+    boundary = b"--renderframe"
+    last_data = b""
+
+    try:
+        while True:
+            # Check if render is still running
+            proc = task.get("proc")
+            if proc and proc.returncode is not None:
+                break
+
+            # Check for new preview frame (compare content, not mtime — C3 clock unreliable)
+            if preview_path.exists():
+                try:
+                    frame_data = preview_path.read_bytes()
+                    if frame_data and frame_data != last_data:
+                        last_data = frame_data
+                        part = (
+                            boundary + b"\r\n"
+                            b"Content-Type: image/jpeg\r\n"
+                            b"Content-Length: " + str(len(frame_data)).encode() + b"\r\n"
+                            b"\r\n"
+                        )
+                        await response.write(part + frame_data + b"\r\n")
+                except Exception:
+                    pass
+
+            await asyncio.sleep(0.3)
+    except (ConnectionResetError, ConnectionAbortedError, asyncio.CancelledError):
+        pass
+
+    return response
 
 
 async def handle_hud_cancel(request: web.Request) -> web.Response:

@@ -42,6 +42,7 @@ from .media import (
     handle_screenshot,
     handle_frame,
     handle_camera_segment,
+    handle_mjpeg_stream,
     handle_qcamera_hls_manifest,
     handle_qcamera_hls_segment,
 )
@@ -49,14 +50,9 @@ from .media import (
 from .hud import (
     handle_hud_prerender,
     handle_hud_progress,
+    handle_hud_render_preview,
     handle_hud_cancel,
     handle_hud_video,
-    handle_hud_stream_start,
-    handle_hud_stream_stop,
-    handle_hud_stream_status,
-    handle_hud_stream_serve,
-    handle_hud_stream_offer,
-    handle_hud_stream_ws,
     handle_screencast_start,
     handle_screencast_seek,
     handle_screencast_pause,
@@ -118,6 +114,7 @@ from .dashboard import (
 
 from .driving import (
     handle_driving_ws,
+    handle_hud_data,
 )
 
 from .home import (

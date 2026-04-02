@@ -17,6 +17,7 @@ from pathlib import Path
 
 from aiohttp import web
 
+from health import run_startup_checks, run_periodic_checks, get_health_status
 from handlers import (
     cors_middleware,
     handle_auth,
@@ -31,20 +32,15 @@ from handlers import (
     handle_device_stats,
     handle_devices,
     handle_hud_cancel,
+    handle_hud_render_preview,
     handle_hud_prerender,
     handle_hud_progress,
-    handle_hud_stream_serve,
-    handle_hud_stream_offer,
-    handle_hud_stream_ws,
     handle_screencast_start,
     handle_screencast_seek,
     handle_screencast_pause,
     handle_screencast_resume,
     handle_screencast_stop,
     handle_screencast_status,
-    handle_hud_stream_start,
-    handle_hud_stream_status,
-    handle_hud_stream_stop,
     handle_hud_video,
     handle_me,
     handle_models_active,
@@ -87,6 +83,7 @@ from handlers import (
     handle_routes_list,
     handle_routes_segments,
     handle_camera_segment,
+    handle_mjpeg_stream,
     handle_qcamera_hls_manifest,
     handle_qcamera_hls_segment,
     handle_frame,
@@ -122,11 +119,11 @@ from handlers import (
     handle_webrtc,
     handle_webrtc_health,
     handle_driving_ws,
+    handle_hud_data,
     handle_home_ws,
     handle_ui_stream,
     handle_ui_stream_frame,
 )
-from hud_stream import HudStreamManager, is_available as hud_stream_available
 from route_store import DEFAULT_DATA_DIR, DEFAULT_PORT, RouteStore
 from storage_management import run_cleanup
 
@@ -148,6 +145,18 @@ async def _cleanup_worker(app: web.Application):
             logger.exception("Cleanup error")
 
 
+async def _health_worker(app: web.Application):
+    """Periodic health checks — runs every 60 seconds."""
+    store: RouteStore = app["store"]
+    static_dir = str(app["static_dir"])
+    while True:
+        await asyncio.sleep(60)
+        try:
+            run_periodic_checks(store=store, static_dir=static_dir)
+        except Exception:
+            logger.exception("Health check error")
+
+
 async def _startup(app: web.Application):
     """Initial route scan on server startup."""
     store: RouteStore = app["store"]
@@ -162,27 +171,23 @@ async def _startup(app: web.Application):
         shutil.rmtree(hls_tmp, ignore_errors=True)
         logger.info("Cleaned up stale HLS temp dir")
 
-    # Start periodic storage cleanup task
-    app["cleanup_task"] = asyncio.create_task(_cleanup_worker(app))
+    # Run startup health checks
+    static_dir = str(app["static_dir"])
+    run_startup_checks(static_dir=static_dir)
 
-    # Initialize HUD stream manager if C3 binaries are available
-    if hud_stream_available():
-        app["stream_manager"] = HudStreamManager()
-        logger.info("HUD live streaming available")
-    else:
-        logger.info("HUD live streaming not available (missing C3 binaries)")
+    # Start periodic background tasks
+    app["cleanup_task"] = asyncio.create_task(_cleanup_worker(app))
+    app["health_task"] = asyncio.create_task(_health_worker(app))
+
 
 
 async def _shutdown(app: web.Application):
     """Clean shutdown — stop any active HUD stream and cleanup task."""
-    task = app.get("cleanup_task")
-    if task:
-        task.cancel()
+    for name in ("cleanup_task", "health_task"):
+        task = app.get(name)
+        if task:
+            task.cancel()
 
-    mgr = app.get("stream_manager")
-    if mgr and mgr.is_active:
-        logger.info("Stopping active HUD stream on shutdown...")
-        await mgr.stop()
 
 
 # ─── App factory ──────────────────────────────────────────────────────
@@ -231,22 +236,21 @@ def create_app(data_dir: str, static_dir: str) -> web.Application:
     app.router.add_post("/v1/route/{routeName}/screenshot", handle_screenshot)
     app.router.add_get("/v1/route/{routeName}/frame", handle_frame)
     app.router.add_get("/v1/route/{routeName}/camera/{camera_type}/{segment}", handle_camera_segment)
+    app.router.add_get("/v1/route/{routeName}/mjpeg", handle_mjpeg_stream)
     app.router.add_get("/v1/route/{routeName}/qcamera.m3u8", handle_qcamera_hls_manifest)
     app.router.add_get("/v1/route/{routeName}/qcamera_hls/{filename}", handle_qcamera_hls_segment)
+
+    # HUD overlay data (from qlogs — pre-projected model + telemetry)
+    app.router.add_get("/v1/route/{routeName}/hud_data", handle_hud_data)
 
     # HUD video rendering (pre-render to MP4)
     app.router.add_post("/v1/route/{routeName}/hud/prerender", handle_hud_prerender)
     app.router.add_post("/v1/route/{routeName}/hud/cancel", handle_hud_cancel)
     app.router.add_get("/v1/route/{routeName}/hud/progress", handle_hud_progress)
+    app.router.add_get("/v1/route/{routeName}/hud/preview", handle_hud_render_preview)
     app.router.add_get("/v1/route/{routeName}/hud/video", handle_hud_video)
 
     # HUD live streaming (DRM replay → HLS)
-    app.router.add_post("/v1/hud/stream/start", handle_hud_stream_start)
-    app.router.add_post("/v1/hud/stream/stop", handle_hud_stream_stop)
-    app.router.add_get("/v1/hud/stream/status", handle_hud_stream_status)
-    app.router.add_post("/v1/hud/stream/offer", handle_hud_stream_offer)
-    app.router.add_get("/v1/hud/stream/ws", handle_hud_stream_ws)
-    app.router.add_get("/v1/hud/stream/{filename}", handle_hud_stream_serve)
 
     # Screencast: play fcamera on C3 screen, controlled from mobile
     app.router.add_post("/v1/screencast/start", handle_screencast_start)
@@ -267,7 +271,7 @@ def create_app(data_dir: str, static_dir: str) -> web.Application:
     app.router.add_get("/v1/prime/subscription", handle_stub_error)
     app.router.add_get("/v1/prime/subscribe_info", handle_stub_error)
     app.router.add_get("/v1/storage", handle_storage)
-    app.router.add_get("/health", lambda r: web.json_response({"status": "ok"}))
+    app.router.add_get("/health", lambda r: web.json_response(get_health_status()))
 
     # BMW params
     app.router.add_get("/v1/params", handle_params_get)
