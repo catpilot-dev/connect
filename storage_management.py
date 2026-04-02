@@ -7,9 +7,9 @@ Keeps server.py slim by isolating all storage logic here.
 Cleanup is a wrapper around openpilot's stock deleter (system/loggerd/deleter.py)
 with COD-specific logic:
 - Recycled routes: auto-purge after 7 days
-- COD-saved routes: respected unless emergency (<5GB)
+- COD-saved routes: respected unless emergency (<10GB)
 - xattr-preserved routes (from comma cloud): always respected by COD
-- Target: 10GB free (more conservative than stock 5GB)
+- Target: 20GB free
 """
 
 import io
@@ -34,8 +34,8 @@ DOWNLOAD_FILES = {
 }
 
 # COD cleanup thresholds
-MIN_FREE_BYTES = 10 * 1024 * 1024 * 1024   # 10 GB — phase 1 threshold
-EMERGENCY_BYTES = 5 * 1024 * 1024 * 1024    # 5 GB — phase 2 (emergency) threshold
+MIN_FREE_BYTES = 20 * 1024 * 1024 * 1024   # 20 GB — phase 1 threshold
+EMERGENCY_BYTES = 10 * 1024 * 1024 * 1024   # 10 GB — phase 2 (emergency) threshold
 RECYCLE_TTL = 7 * 86400                      # 7 days before recycled routes auto-purge
 
 
@@ -78,8 +78,8 @@ def run_cleanup(store) -> dict:
     """Single cleanup pass — COD wrapper around stock deleter logic.
 
     Phase 0: Expired recycled routes (>7 days) — always, regardless of storage.
-    Phase 1: Normal routes (not saved, not xattr-preserved) — when free < 10GB.
-    Phase 2: COD-saved routes — emergency only, when free < 5GB after phase 1.
+    Phase 1: Normal routes (not saved, not xattr-preserved) — when free < 20GB.
+    Phase 2: COD-saved routes — emergency only, when free < 10GB after phase 1.
 
     xattr-preserved routes (comma cloud) are never deleted by COD.
 
@@ -99,7 +99,7 @@ def run_cleanup(store) -> dict:
         deleted.append({"route": lid, "reason": "recycled_expired", "age_days": round(age_days, 1)})
         logger.info("Cleanup: purged expired recycled route %s (%.1f days old)", lid, age_days)
 
-    # ── Phase 1: Normal routes when free < 10GB ─────────────────────────
+    # ── Phase 1: Normal routes when free < 20GB ─────────────────────────
     free = _free_bytes(store)
     if free < MIN_FREE_BYTES:
         # Candidates: not saved, not hidden, not xattr-preserved
@@ -121,7 +121,7 @@ def run_cleanup(store) -> dict:
             if free >= MIN_FREE_BYTES:
                 break
 
-    # ── Phase 2: Emergency — COD-saved routes when free < 5GB ───────────
+    # ── Phase 2: Emergency — COD-saved routes when free < 10GB ──────────
     free = _free_bytes(store)
     if free < EMERGENCY_BYTES:
         saved = [lid for lid in list(store._preserved) if lid in store._raw]
@@ -131,7 +131,7 @@ def run_cleanup(store) -> dict:
                 continue
             _delete_route_from_disk(store, lid)
             deleted.append({"route": lid, "reason": "emergency"})
-            logger.warning("Cleanup: deleted SAVED route %s (emergency, free < 5GB)", lid)
+            logger.warning("Cleanup: deleted SAVED route %s (emergency, free < 10GB)", lid)
             free = _free_bytes(store)
             if free >= EMERGENCY_BYTES:
                 break
@@ -141,13 +141,16 @@ def run_cleanup(store) -> dict:
     _cleanup_screenshots(SCREENSHOTS_DIR)
 
     # ── HLS cache eviction: keep only the most recent route ─────────────
-    from config import COD_CACHE_DIR
+    from config import COD_CACHE_DIR, COD_HUD_CACHE_DIR
     hls_cache = Path(COD_CACHE_DIR) / "qcamera_hls"
     if hls_cache.exists():
         cached = sorted(hls_cache.iterdir(), key=lambda d: d.stat().st_mtime, reverse=True)
         for d in cached[1:]:  # evict all but newest
             if d.is_dir():
                 shutil.rmtree(d, ignore_errors=True)
+
+    # ── HUD render cache: cap at 500MB, delete oldest MP4s ────────────
+    _cleanup_hud_cache(COD_HUD_CACHE_DIR)
 
     if deleted:
         store._save_metadata()
@@ -156,6 +159,53 @@ def run_cleanup(store) -> dict:
 
 
 SCREENSHOT_MAX_BYTES = 500 * 1024 * 1024  # 500 MB cap for screenshots
+HUD_CACHE_MAX_BYTES = 500 * 1024 * 1024   # 500 MB cap for HUD renders
+
+
+def _cleanup_hud_cache(hud_cache_dir: str):
+    """Delete oldest HUD render MP4s when total size exceeds cap.
+    Also removes orphaned status files without a matching MP4."""
+    if not os.path.isdir(hud_cache_dir):
+        return
+    mp4s = []
+    status_files = []
+    total = 0
+    for name in os.listdir(hud_cache_dir):
+        path = os.path.join(hud_cache_dir, name)
+        if name.endswith('.mp4'):
+            size = os.path.getsize(path)
+            mp4s.append((os.path.getmtime(path), path, size))
+            total += size
+        elif name.endswith('.status.json'):
+            status_files.append(path)
+        elif name in ('preview.jpg', 'preview.jpg.tmp'):
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+    if total <= HUD_CACHE_MAX_BYTES:
+        return
+
+    # Delete oldest MP4s until under cap
+    mp4s.sort()  # oldest first
+    for mtime, path, size in mp4s:
+        if total <= HUD_CACHE_MAX_BYTES:
+            break
+        try:
+            os.unlink(path)
+            total -= size
+            # Remove matching status file
+            base = os.path.basename(path)
+            for sf in status_files:
+                if os.path.basename(sf).startswith(base.split('_')[0]):
+                    try:
+                        os.unlink(sf)
+                    except OSError:
+                        pass
+            logger.info("HUD cache cleanup: deleted %s (%.1fMB)", base, size / 1024 / 1024)
+        except OSError:
+            pass
 
 
 def _cleanup_screenshots(screenshots_dir: str):
