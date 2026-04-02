@@ -27,9 +27,12 @@
     if (parts[0] === 'screenshots') return 'screenshots'
     if (parts[0] === 'driving') return 'driving'
     if (parts[0] === 'home') return 'home'
+    if (parts[0] === 'routes') return 'routes'
     // if (parts[0] === 'dashboard') return 'dashboard'  // disabled for now
     if (parts[0] === 'signals') return 'signals'
-    return 'routes'
+    // Unknown first segment with a second part = route detail (e.g. /{dongleId}/{localId})
+    if (parts.length >= 2) return 'routes'
+    return 'home'
   }
 
   let page = $state(parsePage())
@@ -110,7 +113,7 @@
     if (onroad && page !== 'driving') {
       page = 'driving'
       history.replaceState(null, '', '/driving')
-    } else if (!onroad && (page === 'driving' || page === 'routes')) {
+    } else if (!onroad && page === 'driving') {
       page = 'home'
       history.replaceState(null, '', '/home')
     }
@@ -170,7 +173,7 @@
       if (route === lastRoute) return
       lastRoute = route
       if (!route && page === 'routes') {
-        history.pushState(null, '', '/')
+        history.pushState(null, '', '/routes')
       }
     })
 
@@ -203,7 +206,7 @@
     if (isOnroad) return
     page = 'routes'
     selectedRoute.set(null)
-    history.pushState(null, '', '/')
+    history.pushState(null, '', '/routes')
   }
 
   function showSettings() {
