@@ -1,7 +1,7 @@
 <script>
   import { onMount, onDestroy } from 'svelte'
   import { selectedRoute, dongleId, isMetric } from '../stores.js'
-  import { fetchRoute, fetchRouteFiles, fetchAllCoords, fetchAllEventsWithProgress, enrichRoute, startHudStream, stopHudStream, hudStreamStatus, hudStreamUrl, hudStreamWsUrl, prerenderHud, hudProgress, hudVideoUrl, cancelHudRender, saveNote, addBookmark, updateBookmark, deleteBookmark, takeScreenshot, fetchScreenshotByTime, fetchDashboardTelemetry } from '../api.js'
+  import { fetchRoute, fetchRouteFiles, fetchAllCoords, fetchAllEventsWithProgress, enrichRoute, prerenderHud, hudProgress, hudVideoUrl, cancelHudRender, saveNote, addBookmark, updateBookmark, deleteBookmark, takeScreenshot, fetchScreenshotByTime, fetchDashboardTelemetry, fetchHudData } from '../api.js'
   import { formatDate, formatDistance, formatDuration, getRouteDurationMs, formatAbsoluteTimeHM } from '../format.js'
   import { buildTimelineEvents } from '../derived.js'
   import snarkdown from 'snarkdown'
@@ -33,16 +33,6 @@
   let currentTime = $state(0)
   let duration = $state(0)
   let isPlaying = $state(false)
-  let hudWanted = $state(false)
-  let hudStarting = $state(false)
-  let hudStreaming = $state(false)
-  let hudError = $state(null)
-  let hudPollTimer = null
-  let hudTickTimer = null
-  let hudStartTime = 0  // currentTime when stream was started
-  let hudVideoOffset = 0 // calibrated offset: replay_time at first video frame
-  let hudStreamMode = $state('webrtc')  // 'webrtc' (default), 'ws' (WebSocket fMP4), or 'hls' (legacy)
-  const hudLiveUrl = $derived(hudStreaming ? (hudStreamMode === 'webrtc' ? 'webrtc:' : hudStreamMode === 'ws' ? hudStreamWsUrl() : hudStreamUrl()) : null)
   // HUD download (pre-render to MP4)
   let dlRendering = $state(false)
   let dlReady = $state(false)
@@ -86,6 +76,12 @@
   let hevcSupported = $state(null)  // null=checking, true/false
   let hdSource = $state(null)
   let isFullscreen = $state(false)
+
+  // HUD overlay state
+  let showHud = $state(false)
+  let hudFrames = $state([])
+  let hudLoading = $state(false)
+  let hudLoadedRange = $state(null)  // {start, end} of loaded segment range
 
   let noteText = $state('')
   let editingNote = $state(false)
@@ -220,11 +216,7 @@
   onDestroy(() => {
     document.removeEventListener('fullscreenchange', onFullscreenChange)
     document.removeEventListener('webkitfullscreenchange', onFullscreenChange)
-    // Stop HUD stream if active when navigating away
-    if (hudPollTimer) { clearInterval(hudPollTimer); hudPollTimer = null }
     if (dlPollTimer) { clearInterval(dlPollTimer); dlPollTimer = null }
-    stopHudTick()
-    if (hudWanted) stopHudStream().catch(() => {})
   })
 
   function goBack() {
@@ -260,6 +252,8 @@
       return
     }
     currentTime = t
+    // Ensure HUD data is loaded for current position
+    if (showHud) ensureHudData(t)
   }
 
   function handlePlay() {
@@ -276,6 +270,50 @@
 
   function handleSourceChange(sourceId) {
     hdSource = sourceId
+  }
+
+  async function toggleHudOverlay() {
+    showHud = !showHud
+    if (showHud && !hudFrames.length && route) {
+      // Load HUD data for the visible range (or full route)
+      hudLoading = true
+      const start = selectionStart || 0
+      const end = selectionEnd > 0 ? selectionEnd : duration || ((route.maxqlog + 1) * 60)
+      try {
+        hudFrames = await fetchHudData(route.local_id, start, end)
+        hudLoadedRange = { start, end }
+      } catch (e) {
+        console.warn('HUD data load failed:', e)
+      }
+      hudLoading = false
+    }
+  }
+
+  // Load more HUD data when playback moves outside loaded range
+  async function ensureHudData(t) {
+    if (!showHud || !route || hudLoading) return
+    if (hudLoadedRange && t >= hudLoadedRange.start && t <= hudLoadedRange.end) return
+
+    // Load the segment containing t (± 1 segment buffer)
+    const seg = Math.floor(t / 60)
+    const start = Math.max(0, (seg - 1)) * 60
+    const end = Math.min((seg + 2) * 60, (route.maxqlog + 1) * 60)
+    hudLoading = true
+    try {
+      const newFrames = await fetchHudData(route.local_id, start, end)
+      // Merge with existing frames, dedup by time
+      const existing = new Set(hudFrames.map(f => f.t))
+      hudFrames = [...hudFrames, ...newFrames.filter(f => !existing.has(f.t))].sort((a, b) => a.t - b.t)
+      if (hudLoadedRange) {
+        hudLoadedRange = {
+          start: Math.min(hudLoadedRange.start, start),
+          end: Math.max(hudLoadedRange.end, end),
+        }
+      } else {
+        hudLoadedRange = { start, end }
+      }
+    } catch {}
+    hudLoading = false
   }
 
   async function handleScreenshot() {
@@ -300,117 +338,10 @@
     }
   }
 
-  function stopHudTick() {
-    if (hudTickTimer) { clearInterval(hudTickTimer); hudTickTimer = null }
-  }
-
-  function startHudTick() {
-    stopHudTick()
-    hudStartTime = currentTime
-    hudVideoOffset = 0
-    const endTime = (selectionEnd > 0) ? selectionEnd : duration
-    // For WebRTC: derive timeline from video element playback position
-    // (avoids desync from encoding+transport latency).
-    // Calibrate once: when video first plays, snapshot server replay_time
-    // as the base offset so video.currentTime maps to route time correctly.
-    let calibrated = false
-    hudTickTimer = setInterval(async () => {
-      if (hudStreamMode === 'webrtc') {
-        const vt = videoPlayer?.getHudVideoTime?.() ?? 0
-        if (vt > 0.1 && !calibrated) {
-          // One-time calibration: replay_time at first video frame
-          try {
-            const st = await hudStreamStatus()
-            if (st.replay_time != null) {
-              hudVideoOffset = st.replay_time - vt
-              calibrated = true
-            }
-          } catch {}
-        }
-        if (calibrated && vt > 0) {
-          currentTime = hudVideoOffset + vt
-        } else if (!calibrated) {
-          // Pre-calibration: use server time
-          try {
-            const st = await hudStreamStatus()
-            if (st.replay_time != null) currentTime = st.replay_time
-          } catch {}
-        }
-      } else {
-        try {
-          const st = await hudStreamStatus()
-          if (st.replay_time != null) {
-            currentTime = st.replay_time
-          } else {
-            currentTime += 1
-          }
-        } catch {
-          currentTime += 1
-        }
-      }
-      if (endTime > 0 && currentTime >= endTime) {
-        stopHudTick()
-        hudWanted = false
-        hudStreaming = false
-        hudMode = null
-        stopHudStream().catch(() => {})
-        restoreVideoDefaults()
-      }
-    }, hudStreamMode === 'webrtc' ? 250 : 1000)
-  }
-
   function restoreVideoDefaults() {
-    // Restore normal video playback after HUD stream or download finishes
     videoPlayer?.setPlaybackRate(1.0)
     videoPlayer?.pause()
     isPlaying = false
-  }
-
-  async function toggleHud() {
-    if (hudWanted) {
-      // Turning off — stop stream and restore normal video
-      hudWanted = false
-      if (hudPollTimer) { clearInterval(hudPollTimer); hudPollTimer = null }
-      stopHudTick()
-      hudStarting = false
-      hudStreaming = false
-      hudError = null
-      stopHudStream().catch(() => {})
-      restoreVideoDefaults()
-      return
-    }
-    hudWanted = true
-    hudStarting = true
-    hudStreaming = false
-    hudError = null
-    try {
-      const streamResult = await startHudStream(route.local_id, currentTime, !!hevcSupported, 'webrtc')
-      hudStreamMode = streamResult.mode || 'ws'
-      // Poll for streaming status
-      hudPollTimer = setInterval(async () => {
-        try {
-          const s = await hudStreamStatus()
-          if (s.status === 'streaming') {
-            clearInterval(hudPollTimer)
-            hudPollTimer = null
-            hudStarting = false
-            hudStreamMode = s.mode || hudStreamMode
-            hudStreaming = true
-            startHudTick()
-          } else if (s.status === 'error') {
-            clearInterval(hudPollTimer)
-            hudPollTimer = null
-            hudStarting = false
-            hudError = s.error || 'Stream failed'
-            hudWanted = false
-          }
-        } catch { /* ignore poll errors */ }
-      }, 2000)
-    } catch (e) {
-      hudStarting = false
-      hudError = e.message
-      hudWanted = false
-    }
   }
 
   function formatRemaining(sec) {
@@ -781,16 +712,6 @@
     }
   }
 
-  function handleHudStream() {
-    hudMode = 'stream'
-    toggleHud()
-  }
-
-  function stopHudStream_mode() {
-    hudMode = null
-    toggleHud()  // toggleHud sees hudWanted=true and stops
-  }
-
   function handleHudDownload() {
     hudMode = 'download'
   }
@@ -876,18 +797,27 @@
         {/if}
 
         <div class="relative overflow-hidden" class:fullscreen-video={isFullscreen}
-          class:rounded-xl={!hudLiveUrl && !isFullscreen}
-          class:hud-corners={!!hudLiveUrl}
+          class:rounded-xl={!isFullscreen}
           class:recording-border-static={dlRendering && dlPhase !== 'recording'}
           class:recording-border-blink={dlRendering && dlPhase === 'recording'}
           style={!hudMode && engagementColor ? `border: ${isFullscreen ? '6px' : '8px'} solid ${engagementColor}` : ''}>
+          <!-- Live render preview (MJPEG) during HUD Download recording -->
+          {#if dlRendering && dlPhase === 'recording' && route}
+            <img
+              src={`/v1/route/${route.local_id}/hud/preview`}
+              class="absolute inset-0 w-full h-full object-contain bg-black z-30"
+              alt="Render preview"
+            />
+          {/if}
           <VideoPlayer
             bind:this={videoPlayer}
             {route}
             {files}
-            {hudLiveUrl}
             {hdSource}
             frozen={dlRendering}
+            useMjpeg={hevcSupported === false && !hdSource}
+            {hudFrames}
+            {showHud}
             {selectionStart}
             {selectionEnd}
             bind:currentTime
@@ -895,7 +825,7 @@
             onTimeUpdate={handleTimeUpdate}
             onPlay={handlePlay}
             onPause={handlePause}
-            onHudStream={!enriching && !hudMode ? handleHudStream : undefined}
+            onHudToggle={!enriching ? toggleHudOverlay : undefined}
             onHudDownload={!enriching && !hudMode ? handleHudDownload : undefined}
             onHevcFailed={() => { hevcSupported = false; hdSource = null }}
           />
@@ -927,24 +857,7 @@
         </div>
 
         {#if !isFullscreen && !enriching}
-          {#if hudMode === 'stream'}
-            <!-- HUD Stream active panel -->
-            <div class="flex items-center justify-between h-8 px-2">
-              <div class="flex items-center gap-2">
-                {#if hudStarting}
-                  <div class="w-3 h-3 border-2 border-engage-green border-t-transparent rounded-full animate-spin"></div>
-                  <span class="text-xs text-surface-400">Starting stream...</span>
-                {:else if hudStreaming}
-                  <div class="w-2 h-2 bg-red-500 rounded-full animate-pulse"></div>
-                  <span class="text-xs text-surface-400">HUD UI Preview</span>
-                {:else if hudError}
-                  <span class="text-xs text-red-400">{hudError}</span>
-                {/if}
-              </div>
-              <button class="btn-sm bg-red-600 hover:bg-red-500 text-white px-3 py-1 rounded text-xs"
-                onclick={stopHudStream_mode}>Stop</button>
-            </div>
-          {:else if hudMode === 'download'}
+          {#if hudMode === 'download'}
             <!-- HUD Download panel -->
             {#if !dlRendering && !dlReady}
               <div class="flex items-center justify-between h-8 px-2">
