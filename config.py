@@ -38,6 +38,7 @@ COD_HLS_TMP_DIR = os.getenv("COD_HLS_TMP_DIR", "/data/connect-on-device/hud_hls_
 
 # Binaries
 PYTHON_BIN = os.getenv("PYTHON_BIN", "/usr/local/venv/bin/python")
+FFMPEG_BIN = os.getenv("FFMPEG_BIN", "/usr/local/bin/ffmpeg")
 REPLAY_BIN = os.path.join(OPENPILOT_DIR, "tools/replay/replay")
 
 # Staging paths for branch upgrades

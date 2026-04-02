@@ -29,6 +29,8 @@ import time
 from pathlib import Path
 from subprocess import Popen
 
+from config import FFMPEG_BIN
+
 # Handle SIGTERM gracefully — raises SystemExit so finally blocks run
 signal.signal(signal.SIGTERM, lambda *_: sys.exit(1))
 
@@ -432,7 +434,7 @@ def main():
             if os.path.isfile(hls_m3u8):
                 write_status(args.status_file, {"status": "rendering", "elapsed_sec": round(duration, 1),
                                                 "total_sec": duration, "phase": "concatenating"})
-                concat_cmd = ["ffmpeg", "-y", "-allowed_extensions", "ALL",
+                concat_cmd = [FFMPEG_BIN, "-y", "-allowed_extensions", "ALL",
                               "-i", hls_m3u8, "-c", "copy", raw_output]
                 run_ffmpeg_with_progress(concat_cmd, args.status_file,
                                          "concatenating", duration, "/tmp/hud_concat_drm.log")
@@ -446,7 +448,7 @@ def main():
                                                 "total_sec": duration, "phase": "post-processing"})
 
                 # Build ffmpeg command with input options for trim + speedup
-                post_cmd = ["ffmpeg", "-y"]
+                post_cmd = [FFMPEG_BIN, "-y"]
 
                 # Trim warmup: -ss and -t are in INPUT time (before itsscale)
                 if actual_warmup > 0:

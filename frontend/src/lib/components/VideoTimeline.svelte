@@ -79,11 +79,30 @@
     return viewStart + Math.max(0, Math.min(1, pct)) * viewDur
   }
 
+  // Add/remove window listeners synchronously — $effect is async-batched in
+  // Svelte 5 and would miss the first mousemove after mousedown.
+  function addDragListeners() {
+    window.addEventListener('mousemove', onDrag)
+    window.addEventListener('mouseup', stopDrag)
+    window.addEventListener('touchmove', onDrag, { passive: true })
+    window.addEventListener('touchend', stopDrag)
+    window.addEventListener('touchcancel', stopDrag)
+  }
+
+  function removeDragListeners() {
+    window.removeEventListener('mousemove', onDrag)
+    window.removeEventListener('mouseup', stopDrag)
+    window.removeEventListener('touchmove', onDrag)
+    window.removeEventListener('touchend', stopDrag)
+    window.removeEventListener('touchcancel', stopDrag)
+  }
+
   function startHandleDrag(handle, e) {
     draggingHandle = handle
     isDragging = true
     e.preventDefault()
     e.stopPropagation()
+    addDragListeners()
   }
 
   function startDrag(e) {
@@ -93,6 +112,7 @@
     prevSel = { start: selectionStart, end: selectionEnd }
     onSeek(t)
     e.preventDefault()
+    addDragListeners()
   }
 
   function onDrag(e) {
@@ -117,7 +137,7 @@
     }
   }
 
-  function endDrag() {
+  function stopDrag() {
     const selDur = selectionEnd - selectionStart
     if (draggingHandle && selDur > 0) {
       const padding = selDur / 2
@@ -134,6 +154,7 @@
     isDragging = false
     draggingHandle = null
     dragOrigin = null
+    removeDragListeners()
   }
 
   function resetView() {
@@ -142,27 +163,6 @@
     viewStart = 0
     viewEnd = duration
   }
-
-  $effect(() => {
-    if (isDragging) {
-      const moveHandler = (e) => onDrag(e)
-      const upHandler = () => endDrag()
-
-      window.addEventListener('mousemove', moveHandler)
-      window.addEventListener('mouseup', upHandler)
-      window.addEventListener('touchmove', moveHandler, { passive: true })
-      window.addEventListener('touchend', upHandler)
-      window.addEventListener('touchcancel', upHandler)
-
-      return () => {
-        window.removeEventListener('mousemove', moveHandler)
-        window.removeEventListener('mouseup', upHandler)
-        window.removeEventListener('touchmove', moveHandler)
-        window.removeEventListener('touchend', upHandler)
-        window.removeEventListener('touchcancel', upHandler)
-      }
-    }
-  })
 </script>
 
 <!-- Timeline scrubber: full-width, handles inside -->
@@ -211,7 +211,7 @@
 
   <!-- Dark overlay for played region contrast -->
   <div
-    class="absolute inset-0 bg-black/30"
+    class="absolute inset-0 bg-black/30 pointer-events-none"
     style="clip-path: inset(0 {100 - progress}% 0 0)"
   ></div>
 
@@ -229,7 +229,7 @@
 
   <!-- Playhead marker -->
   <div
-    class="absolute top-0 bottom-0 w-0.5 bg-white shadow-[0_0_4px_rgba(255,255,255,0.5)] z-20"
+    class="absolute top-0 bottom-0 w-0.5 bg-white shadow-[0_0_4px_rgba(255,255,255,0.5)] z-20 pointer-events-none"
     style="left: {progress}%"
   ></div>
 
