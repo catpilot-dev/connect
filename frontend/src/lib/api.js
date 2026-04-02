@@ -24,6 +24,12 @@ export async function fetchStorage() {
   return res.json()
 }
 
+export async function fetchHealth() {
+  const res = await fetch('/health')
+  if (!res.ok) return null
+  return res.json()
+}
+
 // ── Routes ──────────────────────────────────────────────────
 
 export async function fetchRoutes(dongleId, { limit = 5, beforeCounter, filter, afterGps, beforeGps } = {}) {
@@ -143,6 +149,18 @@ export function cameraUrl(routeName, cameraType, segment) {
   return `/v1/route/${routeId(routeName)}/camera/${cameraType}/${segment}`
 }
 
+/** Build MJPEG stream URL for qcamera (universal browser support) */
+export function mjpegUrl(routeName, t = 0, fps = 20, q = 5) {
+  return `/v1/route/${routeId(routeName)}/mjpeg?t=${t}&fps=${fps}&q=${q}`
+}
+
+/** Fetch pre-projected HUD overlay data (model + telemetry) for a time range */
+export async function fetchHudData(routeName, start = 0, end = 60) {
+  const res = await fetch(`/v1/route/${routeId(routeName)}/hud_data?start=${start}&end=${end}`)
+  if (!res.ok) return []
+  return res.json()
+}
+
 /** Build download URL with file type and segment selection */
 export function downloadUrl(routeName, fileTypes = ['rlog'], segments = null) {
   let url = `/v1/route/${routeId(routeName)}/download?files=${fileTypes.join(',')}`
@@ -183,52 +201,6 @@ export async function hudProgress(routeName) {
 
 export function hudVideoUrl(routeName) {
   return `/v1/route/${routeId(routeName)}/hud/video`
-}
-
-// ── HUD live streaming ────────────────────────────────────
-
-export async function startHudStream(routeName, start = 0, hd = false, mode = 'webrtc') {
-  const res = await fetch('/v1/hud/stream/start', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ route: routeId(routeName), start, hd, mode }),
-  })
-  if (!res.ok) throw new Error(`startHudStream: ${res.status}`)
-  return res.json()
-}
-
-export async function stopHudStream() {
-  const res = await fetch('/v1/hud/stream/stop', { method: 'POST' })
-  if (!res.ok) throw new Error(`stopHudStream: ${res.status}`)
-  return res.json()
-}
-
-export async function hudStreamStatus() {
-  const res = await fetch('/v1/hud/stream/status')
-  if (!res.ok) throw new Error(`hudStreamStatus: ${res.status}`)
-  return res.json()
-}
-
-/** HLS live stream playlist URL */
-export function hudStreamUrl() {
-  return '/v1/hud/stream/stream.m3u8'
-}
-
-/** WebSocket URL for fMP4 HUD stream */
-export function hudStreamWsUrl() {
-  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
-  return `${proto}//${location.host}/v1/hud/stream/ws`
-}
-
-/** WebRTC SDP offer/answer exchange */
-export async function hudStreamOffer(sdp) {
-  const res = await fetch('/v1/hud/stream/offer', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ sdp }),
-  })
-  if (!res.ok) throw new Error(`hudStreamOffer: ${res.status}`)
-  return res.json()
 }
 
 // ── Live driving WebRTC ──────────────────────────────────────

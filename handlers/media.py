@@ -17,6 +17,8 @@ from handler_helpers import get_route_or_404, parse_json
 from rlog_parser import _generate_coords_json
 from route_helpers import _resolve_local_id
 
+from config import FFMPEG_BIN
+
 logger = logging.getLogger("connect")
 
 
@@ -74,7 +76,7 @@ def _generate_hls_segments(store, fullname: str) -> Path | None:
     tmp_manifest = out_dir / "index.m3u8.tmp"
     try:
         subprocess.run([
-            'ffmpeg', '-y', '-hide_banner', '-loglevel', 'error',
+            FFMPEG_BIN, '-y', '-hide_banner', '-loglevel', 'error',
             '-f', 'concat', '-safe', '0', '-i', str(list_path),
             '-c', 'copy',
             '-movflags', '+frag_keyframe+empty_moov+default_base_moof',
@@ -194,7 +196,7 @@ def _mux_fcamera(hevc_path: str) -> str:
     os.close(fd)
     try:
         subprocess.run([
-            'ffmpeg', '-y', '-hide_banner', '-loglevel', 'error',
+            FFMPEG_BIN, '-y', '-hide_banner', '-loglevel', 'error',
             '-framerate', '20', '-i', hevc_path,
             '-c', 'copy', '-movflags', '+faststart', tmp_path,
         ], check=True, timeout=60)
@@ -541,7 +543,7 @@ def _mux_hevc(hevc_path: str, fps: int = 20) -> str:
     os.close(fd)
     try:
         subprocess.run([
-            'ffmpeg', '-y', '-hide_banner', '-loglevel', 'error',
+            FFMPEG_BIN, '-y', '-hide_banner', '-loglevel', 'error',
             '-framerate', str(fps), '-i', hevc_path,
             '-c', 'copy', '-movflags', '+faststart', tmp_path,
         ], check=True, timeout=60)
@@ -584,3 +586,160 @@ async def handle_camera_segment(request: web.Request) -> web.Response:
         "Content-Type": "video/mp4",
         "Cache-Control": "public, max-age=86400",
     })
+
+
+# ─── MJPEG streaming ────────────────────────────────────────────────
+
+def _collect_qcamera_paths(store, fullname: str) -> list[str]:
+    """Collect all qcamera.ts paths for a route, ordered by segment."""
+    local_id = store.get_local_id(fullname)
+    if not local_id:
+        return []
+    paths = []
+    seg = 0
+    while True:
+        p = store.data_dir / f"{local_id}--{seg}" / "qcamera.ts"
+        if not p.exists():
+            break
+        paths.append(str(p))
+        seg += 1
+    return paths
+
+
+def _write_concat_file(ts_paths: list[str]) -> str:
+    """Write a temporary ffmpeg concat file. Caller must delete it."""
+    fd, path = tempfile.mkstemp(suffix=".txt", prefix="mjpeg_concat_", dir=COD_CACHE_DIR)
+    with os.fdopen(fd, "w") as f:
+        for p in ts_paths:
+            f.write(f"file '{p}'\n")
+    return path
+
+
+MJPEG_BOUNDARY = b"--mjpegframe"
+
+
+async def handle_mjpeg_stream(request: web.Request) -> web.StreamResponse:
+    """GET /v1/route/{routeName}/mjpeg?t=0&fps=20&q=5
+
+    Stream qcamera as MJPEG (multipart/x-mixed-replace).
+    Works in every browser — no codec dependencies.
+
+    Query params:
+      t     — start time in seconds (default 0)
+      fps   — output framerate (default 20)
+      q     — JPEG quality 2-31, lower=better (default 5)
+      speed — playback speed multiplier (default 1.0, e.g. 0.5, 2.0)
+    """
+    route_name, route, store = get_route_or_404(request)
+    fullname = route["fullname"]
+
+    start_time = float(request.query.get("t", "0"))
+    fps = int(request.query.get("fps", "20"))
+    quality = int(request.query.get("q", "5"))
+    speed = float(request.query.get("speed", "1.0"))
+    fps = max(1, min(30, fps))
+    quality = max(2, min(31, quality))
+    speed = max(0.25, min(4.0, speed))
+
+    ts_paths = _collect_qcamera_paths(store, fullname)
+    if not ts_paths:
+        raise web.HTTPNotFound(text="No qcamera segments found")
+
+    # Skip to the right segment for fast seeking (each segment = 60s)
+    # Round down to segment boundary — no -ss needed, instant start
+    start_seg = int(start_time // 60)
+    if start_seg >= len(ts_paths):
+        start_seg = max(0, len(ts_paths) - 1)
+    actual_start = start_seg * 60
+    ts_paths = ts_paths[start_seg:]
+
+    concat_path = _write_concat_file(ts_paths)
+
+    cmd = [
+        FFMPEG_BIN, '-hide_banner', '-loglevel', 'error',
+        '-f', 'concat', '-safe', '0', '-i', concat_path,
+        '-vf', f'fps={fps}',
+        '-q:v', str(quality),
+        '-f', 'image2pipe', '-vcodec', 'mjpeg',
+        'pipe:1',
+    ]
+    frame_interval = 1.0 / (fps * speed)
+
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+
+    response = web.StreamResponse(
+        status=200,
+        headers={
+            "Content-Type": "multipart/x-mixed-replace; boundary=mjpegframe",
+            "Cache-Control": "no-cache, no-store",
+            "Connection": "close",
+            "X-Start-Time": str(actual_start),
+        },
+    )
+    try:
+        await response.prepare(request)
+    except Exception:
+        proc.kill()
+        await proc.wait()
+        os.unlink(concat_path)
+        raise
+
+    try:
+        import time as _time
+        buf = b""
+        SOI = b"\xff\xd8"
+        EOI = b"\xff\xd9"
+        next_frame_time = _time.monotonic()
+
+        while True:
+            chunk = await proc.stdout.read(65536)
+            if not chunk:
+                break
+            buf += chunk
+
+            # Extract complete JPEG frames from the pipe
+            while True:
+                soi_pos = buf.find(SOI)
+                if soi_pos < 0:
+                    buf = b""
+                    break
+                eoi_pos = buf.find(EOI, soi_pos + 2)
+                if eoi_pos < 0:
+                    buf = buf[soi_pos:]
+                    break
+
+                frame = buf[soi_pos:eoi_pos + 2]
+                buf = buf[eoi_pos + 2:]
+
+                # Throttle to target fps
+                now = _time.monotonic()
+                delay = next_frame_time - now
+                if delay > 0:
+                    await asyncio.sleep(delay)
+                next_frame_time = max(_time.monotonic(), next_frame_time + frame_interval)
+
+                part = (
+                    MJPEG_BOUNDARY + b"\r\n"
+                    b"Content-Type: image/jpeg\r\n"
+                    b"Content-Length: " + str(len(frame)).encode() + b"\r\n"
+                    b"\r\n"
+                )
+                await response.write(part + frame + b"\r\n")
+    except (ConnectionResetError, ConnectionAbortedError, asyncio.CancelledError):
+        pass
+    finally:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        await proc.wait()
+        try:
+            os.unlink(concat_path)
+        except OSError:
+            pass
+
+    return response
