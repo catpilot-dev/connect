@@ -11,6 +11,9 @@
   import DashboardPage from './lib/pages/DashboardPage.svelte'
   import SignalBrowserPage from './lib/pages/SignalBrowserPage.svelte'
   import PluginsPage from './lib/pages/PluginsPage.svelte'
+  import ScreenshotsPage from './lib/pages/ScreenshotsPage.svelte'
+  import DrivingPage from './lib/pages/DrivingPage.svelte'
+  import HomePage from './lib/pages/HomePage.svelte'
 
   let error = $state(null)
   let isOnroad = $state(false)
@@ -21,9 +24,15 @@
     if (parts[0] === 'tiles') return 'tiles'
     if (parts[0] === 'settings') return 'settings'
     if (parts[0] === 'plugins') return 'plugins'
-    if (parts[0] === 'dashboard') return 'dashboard'
+    if (parts[0] === 'screenshots') return 'screenshots'
+    if (parts[0] === 'driving') return 'driving'
+    if (parts[0] === 'home') return 'home'
+    if (parts[0] === 'routes') return 'routes'
+    // if (parts[0] === 'dashboard') return 'dashboard'  // disabled for now
     if (parts[0] === 'signals') return 'signals'
-    return 'routes'
+    // Unknown first segment with a second part = route detail (e.g. /{dongleId}/{localId})
+    if (parts.length >= 2) return 'routes'
+    return 'home'
   }
 
   let page = $state(parsePage())
@@ -33,6 +42,102 @@
     const parts = location.pathname.split('/').filter(Boolean)
     if (parts[0] === 'tiles') return null
     return parts.length >= 2 ? parts[1] : null  // local_id
+  }
+
+  // ── Screen wake lock ─────────────────────────────────────────────────────
+  // Keeps the phone screen on while COD is open.
+  // Re-acquires automatically after tab visibility is restored (e.g. unlock).
+  function startWakeLock() {
+    if (!navigator.wakeLock) return
+    let lock = null
+    async function acquire() {
+      try { lock = await navigator.wakeLock.request('screen') } catch {}
+    }
+    acquire()
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') acquire()
+    })
+    return () => lock?.release()
+  }
+
+  // ── Phone GPS sender ─────────────────────────────────────────────────────
+  // Streams browser Geolocation fixes to /ws/gps on the device so the
+  // phone_gps plugin can publish gpsLocationExternal cereal messages.
+  function startGpsSender() {
+    if (!navigator.geolocation) return
+
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws'
+    let ws = null
+    let watchId = null
+    let reconnectTimer = null
+
+    function connect() {
+      ws = new WebSocket(`${proto}://${location.host}/ws/gps`)
+      ws.onopen = () => {
+        watchId = navigator.geolocation.watchPosition(
+          (pos) => {
+            if (ws.readyState !== WebSocket.OPEN) return
+            const c = pos.coords
+            ws.send(JSON.stringify({
+              latitude:         c.latitude,
+              longitude:        c.longitude,
+              altitude:         c.altitude,
+              speed:            c.speed,
+              heading:          c.heading,
+              accuracy:         c.accuracy,
+              altitudeAccuracy: c.altitudeAccuracy,
+              timestamp:        pos.timestamp,
+            }))
+          },
+          (err) => console.warn('phone_gps: geolocation error', err.message),
+          { enableHighAccuracy: true, maximumAge: 1000, timeout: 10000 },
+        )
+      }
+      ws.onclose = () => {
+        if (watchId !== null) { navigator.geolocation.clearWatch(watchId); watchId = null }
+        // Reconnect after 5s if page is still open
+        reconnectTimer = setTimeout(connect, 5000)
+      }
+    }
+
+    connect()
+
+    return () => {
+      clearTimeout(reconnectTimer)
+      if (watchId !== null) navigator.geolocation.clearWatch(watchId)
+      if (ws) ws.close()
+    }
+  }
+
+  function autoNavigate(onroad) {
+    if (onroad && page !== 'driving') {
+      page = 'driving'
+      history.replaceState(null, '', '/driving')
+    } else if (!onroad && page === 'driving') {
+      page = 'home'
+      history.replaceState(null, '', '/home')
+    }
+  }
+
+  function startOnroadWatcher() {
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws'
+    let ws
+    function connect() {
+      ws = new WebSocket(`${proto}://${location.host}/ws/home`)
+      ws.onmessage = (e) => {
+        try {
+          const msg = JSON.parse(e.data)
+          if (msg.type === 'device' && 'isOnroad' in msg) {
+            const wasOnroad = isOnroad
+            isOnroad = msg.isOnroad
+            if (isOnroad !== wasOnroad) autoNavigate(isOnroad)
+          }
+        } catch {}
+      }
+      ws.onclose = () => setTimeout(connect, 3000)
+    }
+    connect()
+    return () => ws?.close()
   }
 
   onMount(async () => {
@@ -56,8 +161,9 @@
       updates = updatesResult.value
     }
 
-    // Restore state from URL on load
-    page = isOnroad ? 'dashboard' : parsePage()
+    // Initial navigation based on onroad state
+    page = parsePage()
+    autoNavigate(isOnroad)
     const initialRoute = parseRoutePath()
     if (initialRoute) selectedRoute.set(initialRoute)
 
@@ -67,31 +173,40 @@
       if (route === lastRoute) return
       lastRoute = route
       if (!route && page === 'routes') {
-        history.pushState(null, '', '/')
+        history.pushState(null, '', '/routes')
       }
     })
 
     window.addEventListener('popstate', () => {
       const p = parsePage()
-      if (isOnroad && (p === 'routes')) {
-        page = 'dashboard'
-        history.replaceState(null, '', '/dashboard')
-        return
-      }
+      // if (isOnroad && (p === 'routes')) {
+      //   page = 'dashboard'
+      //   history.replaceState(null, '', '/dashboard')
+      //   return
+      // }
       page = p
       const route = parseRoutePath()
       lastRoute = route
       selectedRoute.set(route)
     })
 
-    return unsub
+    const stopWakeLock = startWakeLock()
+    const stopGps = startGpsSender()
+    const stopOnroadWatcher = startOnroadWatcher()
+    return () => { unsub(); if (stopWakeLock) stopWakeLock(); if (stopGps) stopGps(); stopOnroadWatcher() }
   })
+
+  function showHome() {
+    page = 'home'
+    selectedRoute.set(null)
+    history.pushState(null, '', '/home')
+  }
 
   function showRoutes() {
     if (isOnroad) return
     page = 'routes'
     selectedRoute.set(null)
-    history.pushState(null, '', '/')
+    history.pushState(null, '', '/routes')
   }
 
   function showSettings() {
@@ -112,6 +227,18 @@
     history.pushState(null, '', '/plugins')
   }
 
+  function showDriving() {
+    page = 'driving'
+    selectedRoute.set(null)
+    history.pushState(null, '', '/driving')
+  }
+
+  function showScreenshots() {
+    page = 'screenshots'
+    selectedRoute.set(null)
+    history.pushState(null, '', '/screenshots')
+  }
+
   async function handleUpdate() {
     const data = await applyUpdates()
     if (data.cod_updated) {
@@ -122,18 +249,35 @@
   }
 </script>
 
-{#if page === 'signals'}
+{#if page === 'driving'}
+  <DrivingPage />
+{:else if page === 'home'}
+  <HomePage />
+{:else if page === 'signals'}
   <SignalBrowserPage />
 {:else if page === 'tiles'}
   <TileManager />
+<!-- Dashboard disabled for now
 {:else if isOnroad && page === 'dashboard'}
-  <!-- Fullscreen dashboard while driving — no header, no chrome -->
   <DashboardPage {isOnroad} />
+-->
 {:else}
   <div class="min-h-dvh flex flex-col">
     <DeviceHeader>
       {#snippet nav()}
         <div class="flex items-center gap-1">
+          <button
+            class="px-3 py-1.5 text-sm rounded transition-colors {page === 'home' ? 'bg-surface-700 text-surface-50' : 'text-surface-400 hover:text-surface-200'}"
+            onclick={showHome}
+          >
+            Home
+          </button>
+          <button
+            class="px-3 py-1.5 text-sm rounded transition-colors {page === 'driving' ? 'bg-surface-700 text-surface-50' : 'text-surface-400 hover:text-surface-200'}"
+            onclick={showDriving}
+          >
+            Driving
+          </button>
           {#if !isOnroad}
           <button
             class="px-3 py-1.5 text-sm rounded transition-colors {page === 'routes' && !$selectedRoute ? 'bg-surface-700 text-surface-50' : 'text-surface-400 hover:text-surface-200'}"
@@ -142,12 +286,14 @@
             Routes
           </button>
           {/if}
+          <!-- Dashboard button disabled for now
           <button
             class="px-3 py-1.5 text-sm rounded transition-colors {page === 'dashboard' ? 'bg-surface-700 text-surface-50' : 'text-surface-400 hover:text-surface-200'}"
             onclick={showDashboard}
           >
             Dashboard
           </button>
+          -->
           <button
             class="px-3 py-1.5 text-sm rounded transition-colors {page === 'settings' ? 'bg-surface-700 text-surface-50' : 'text-surface-400 hover:text-surface-200'}"
             onclick={showSettings}
@@ -159,6 +305,12 @@
             onclick={showPlugins}
           >
             Plugins
+          </button>
+          <button
+            class="px-3 py-1.5 text-sm rounded transition-colors {page === 'screenshots' ? 'bg-surface-700 text-surface-50' : 'text-surface-400 hover:text-surface-200'}"
+            onclick={showScreenshots}
+          >
+            Captures
           </button>
         </div>
       {/snippet}
@@ -179,16 +331,21 @@
             </button>
           </div>
         </div>
-      {:else if page === 'dashboard'}
-        <DashboardPage {isOnroad} />
+      <!-- {:else if page === 'dashboard'}
+        <DashboardPage {isOnroad} /> -->
       {:else if page === 'settings'}
         <SettingsPage {isOnroad} />
       {:else if page === 'plugins'}
         <PluginsPage />
+      {:else if page === 'screenshots'}
+        <ScreenshotsPage />
       {:else if isOnroad}
         <div class="flex items-center justify-center h-64">
           <div class="text-center">
-            <p class="text-surface-400 text-lg">Routes unavailable while driving</p>
+            <p class="text-surface-400 text-lg mb-4">Routes unavailable while driving</p>
+            <button class="px-4 py-2 bg-surface-700 text-surface-50 rounded" onclick={showDriving}>
+              Open Driving View
+            </button>
           </div>
         </div>
       {:else if $selectedRoute}

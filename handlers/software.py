@@ -126,11 +126,9 @@ async def handle_software_uninstall(request: web.Request) -> web.Response:
 
 # ─── Plugin bootstrap for branch upgrades ────────────────────────────
 
-STAGING_PATHS = [
-    "/data/safe_staging/finalized/plugins",  # post-finalize (some updater versions)
-    "/data/safe_staging/upper/plugins",       # overlay upper layer (0.10.x updater)
-]
-PLUGINS_DIR = "/data/plugins"
+from config import STAGING_PATHS, PLUGINS_RUNTIME_DIR
+
+PLUGINS_DIR = PLUGINS_RUNTIME_DIR
 
 
 def _get_device_type() -> str:
@@ -148,7 +146,7 @@ async def handle_software_prepare_plugins(request: web.Request) -> web.Response:
     if not staged_plugins:
         return web.json_response({"status": "no_plugins", "message": "No plugins/ in staged update"})
 
-    # Copy staged plugins to /data/plugins/
+    # Copy staged plugins to /data/plugins-runtime/
     if os.path.exists(PLUGINS_DIR):
         shutil.rmtree(PLUGINS_DIR)
     shutil.copytree(staged_plugins, PLUGINS_DIR)
@@ -167,7 +165,8 @@ async def handle_software_prepare_plugins(request: web.Request) -> web.Response:
 
     # Force plugin builder rebuild on next boot
     try:
-        os.remove("/tmp/plugin_build_hash")
+        from config import BUILD_HASH_FILE
+        os.remove(BUILD_HASH_FILE)
     except FileNotFoundError:
         pass
 
@@ -184,8 +183,9 @@ async def handle_software_prepare_plugins(request: web.Request) -> web.Response:
 
 # ─── Venv sync ────────────────────────────────────────────────────────
 
-VENV_SYNC_SCRIPT = "/data/plugins/c3_compat/venv_sync.py"
-VENV_SYNC_PYTHON = "/usr/local/venv/bin/python"
+from config import PYTHON_BIN as VENV_SYNC_PYTHON
+
+VENV_SYNC_SCRIPT = os.path.join(PLUGINS_DIR, "c3_compat", "venv_sync.py")
 
 
 async def _run_venv_sync(check_only: bool = False) -> dict | None:

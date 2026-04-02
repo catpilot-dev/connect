@@ -4,7 +4,8 @@ import sys
 
 from aiohttp import web
 
-from handler_helpers import PARAMS_DIR, error_response, parse_json, read_param, write_param, read_plugin_param
+from config import OPENPILOT_DIR as _OPENPILOT_DIR, PARAMS_DIR
+from handler_helpers import error_response, parse_json, read_param, write_param, read_plugin_param, write_plugin_param
 
 logger = logging.getLogger("connect")
 
@@ -18,7 +19,7 @@ async def handle_lateral_delay(request: web.Request) -> web.Response:
         return web.json_response({"status": "no data"})
 
     try:
-        sys.path.insert(0, "/data/openpilot") if "/data/openpilot" not in sys.path else None
+        sys.path.insert(0, _OPENPILOT_DIR) if _OPENPILOT_DIR not in sys.path else None
         from cereal import log
         with log.Event.from_bytes(raw) as msg:
             ld = msg.liveDelay
@@ -41,11 +42,19 @@ TOGGLE_PARAMS = [
     "OpenpilotEnabledToggle", "ExperimentalMode",
     "DisengageOnAccelerator", "IsLdwEnabled", "AlwaysOnDM",
     "RecordFront", "RecordAudio", "IsMetric", "LongitudinalPersonality",
+    # Cat-eye headless mode
+    "CatEyePhoneRequired",
     # Developer toggles
     "AdbEnabled", "SshEnabled",
     "JoystickDebugMode", "LongitudinalManeuverMode",
     "AlphaLongitudinalEnabled",
 ]
+
+# Plugin params served via the toggles panel:
+# key → (plugin_id, param_name) stored in /data/plugins-runtime/<id>/data/
+_PLUGIN_TOGGLE_PARAMS = {
+    "CatEyePhoneRequired": ("phone_display", "CatEyePhoneRequired"),
+}
 
 # Mutual exclusion pairs — toggling one ON turns the other OFF
 _TOGGLE_MUTEX = {
@@ -57,11 +66,14 @@ async def handle_toggles_get(request: web.Request) -> web.Response:
     """GET /v1/toggles — read all toggle params."""
     result = {}
     for key in TOGGLE_PARAMS:
-        raw = read_param(key)
-        if key == "LongitudinalPersonality":
+        if key in _PLUGIN_TOGGLE_PARAMS:
+            plugin_id, param_name = _PLUGIN_TOGGLE_PARAMS[key]
+            result[key] = read_plugin_param(plugin_id, param_name) == "1"
+        elif key == "LongitudinalPersonality":
+            raw = read_param(key)
             result[key] = int(raw) if raw else 2  # default: Relaxed
         else:
-            result[key] = raw == "1"
+            result[key] = read_param(key) == "1"
     return web.json_response(result)
 
 
@@ -73,7 +85,10 @@ async def handle_toggles_set(request: web.Request) -> web.Response:
     if key not in TOGGLE_PARAMS:
         raise web.HTTPBadRequest(text=json.dumps({"error": f"Unknown toggle: {key}"}))
     try:
-        if key == "LongitudinalPersonality":
+        if key in _PLUGIN_TOGGLE_PARAMS:
+            plugin_id, param_name = _PLUGIN_TOGGLE_PARAMS[key]
+            write_plugin_param(plugin_id, param_name, "1" if value else "0")
+        elif key == "LongitudinalPersonality":
             write_param(key, str(int(value)))
         else:
             write_param(key, "1" if value else "0")
@@ -98,7 +113,7 @@ LAT_ACCEL_VALUES = [1.5, 2.0, 2.5, 3.0]   # indexed by pill selection
 def update_mapd_settings():
     """Regenerate MapdSettings JSON from plugin params (snake_case keys for mapd Go daemon).
 
-    Reads from /data/plugins/speedlimitd/data/, writes to /data/params/d/MapdSettings.
+    Reads from /data/plugins-runtime/speedlimitd/data/, writes to /data/params/d/MapdSettings.
     """
     enabled = read_plugin_param("speedlimitd", "MapdSpeedLimitControlEnabled") == "1"
 

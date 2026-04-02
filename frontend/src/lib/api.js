@@ -1,4 +1,4 @@
-// API layer for connect_on_device
+// API layer for connect-on-device
 // All fetch functions target the comma-compatible /v1 endpoints
 
 /** Route identifier for API URLs — local_id is the canonical key (e.g. "00000123--ecd17bc154") */
@@ -21,6 +21,12 @@ export async function fetchDeviceStats(dongleId) {
 export async function fetchStorage() {
   const res = await fetch('/v1/storage')
   if (!res.ok) throw new Error(`fetchStorage: ${res.status}`)
+  return res.json()
+}
+
+export async function fetchHealth() {
+  const res = await fetch('/health')
+  if (!res.ok) return null
   return res.json()
 }
 
@@ -143,6 +149,18 @@ export function cameraUrl(routeName, cameraType, segment) {
   return `/v1/route/${routeId(routeName)}/camera/${cameraType}/${segment}`
 }
 
+/** Build MJPEG stream URL for qcamera (universal browser support) */
+export function mjpegUrl(routeName, t = 0, fps = 20, q = 5) {
+  return `/v1/route/${routeId(routeName)}/mjpeg?t=${t}&fps=${fps}&q=${q}`
+}
+
+/** Fetch pre-projected HUD overlay data (model + telemetry) for a time range */
+export async function fetchHudData(routeName, start = 0, end = 60) {
+  const res = await fetch(`/v1/route/${routeId(routeName)}/hud_data?start=${start}&end=${end}`)
+  if (!res.ok) return []
+  return res.json()
+}
+
 /** Build download URL with file type and segment selection */
 export function downloadUrl(routeName, fileTypes = ['rlog'], segments = null) {
   let url = `/v1/route/${routeId(routeName)}/download?files=${fileTypes.join(',')}`
@@ -185,33 +203,17 @@ export function hudVideoUrl(routeName) {
   return `/v1/route/${routeId(routeName)}/hud/video`
 }
 
-// ── HUD live streaming ────────────────────────────────────
+// ── Live driving WebRTC ──────────────────────────────────────
 
-export async function startHudStream(routeName, start = 0) {
-  const res = await fetch('/v1/hud/stream/start', {
+/** Exchange SDP offer with webrtcd for live camera stream */
+export async function liveStreamOffer(sdp, cameras = ['road']) {
+  const res = await fetch('/api/webrtc', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ route: routeId(routeName), start }),
+    body: JSON.stringify({ sdp, cameras }),
   })
-  if (!res.ok) throw new Error(`startHudStream: ${res.status}`)
+  if (!res.ok) throw new Error(`liveStreamOffer: ${res.status}`)
   return res.json()
-}
-
-export async function stopHudStream() {
-  const res = await fetch('/v1/hud/stream/stop', { method: 'POST' })
-  if (!res.ok) throw new Error(`stopHudStream: ${res.status}`)
-  return res.json()
-}
-
-export async function hudStreamStatus() {
-  const res = await fetch('/v1/hud/stream/status')
-  if (!res.ok) throw new Error(`hudStreamStatus: ${res.status}`)
-  return res.json()
-}
-
-/** HLS live stream playlist URL */
-export function hudStreamUrl() {
-  return '/v1/hud/stream/stream.m3u8'
 }
 
 // ── Connectdata URL builders ────────────────────────────────
@@ -558,6 +560,30 @@ export async function deleteTile(lat, lon) {
   const res = await fetch(`/v1/mapd/tiles/${lat}/${lon}`, { method: 'DELETE' })
   if (!res.ok) throw new Error(`deleteTile: ${res.status}`)
   return res.json()
+}
+
+// ── Screenshots ──────────────────────────────────────────
+
+export async function fetchScreenshots() {
+  const res = await fetch('/v1/screenshots')
+  if (!res.ok) throw new Error(`fetchScreenshots: ${res.status}`)
+  return res.json()
+}
+
+export function screenshotUrl(filename) {
+  return `/v1/screenshots/${encodeURIComponent(filename)}`
+}
+
+export async function deleteScreenshot(filename) {
+  const res = await fetch(`/v1/screenshots/${encodeURIComponent(filename)}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error(`deleteScreenshot: ${res.status}`)
+  return res.json()
+}
+
+export async function fetchScreenshotByTime(epoch) {
+  const res = await fetch(`/v1/screenshots/at/${epoch.toFixed(3)}`)
+  if (!res.ok) throw new Error(`fetchScreenshotByTime: ${res.status}`)
+  return res  // raw Response for blob download
 }
 
 // ── Plugins ──────────────────────────────────────────────

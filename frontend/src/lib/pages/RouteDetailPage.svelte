@@ -1,7 +1,7 @@
 <script>
   import { onMount, onDestroy } from 'svelte'
   import { selectedRoute, dongleId, isMetric } from '../stores.js'
-  import { fetchRoute, fetchRouteFiles, fetchAllCoords, fetchAllEventsWithProgress, enrichRoute, startHudStream, stopHudStream, hudStreamStatus, hudStreamUrl, prerenderHud, hudProgress, hudVideoUrl, cancelHudRender, saveNote, addBookmark, updateBookmark, deleteBookmark, takeScreenshot, fetchDashboardTelemetry } from '../api.js'
+  import { fetchRoute, fetchRouteFiles, fetchAllCoords, fetchAllEventsWithProgress, enrichRoute, prerenderHud, hudProgress, hudVideoUrl, cancelHudRender, saveNote, addBookmark, updateBookmark, deleteBookmark, takeScreenshot, fetchScreenshotByTime, fetchDashboardTelemetry, fetchHudData } from '../api.js'
   import { formatDate, formatDistance, formatDuration, getRouteDurationMs, formatAbsoluteTimeHM } from '../format.js'
   import { buildTimelineEvents } from '../derived.js'
   import snarkdown from 'snarkdown'
@@ -33,14 +33,6 @@
   let currentTime = $state(0)
   let duration = $state(0)
   let isPlaying = $state(false)
-  let hudWanted = $state(false)
-  let hudStarting = $state(false)
-  let hudStreaming = $state(false)
-  let hudError = $state(null)
-  let hudPollTimer = null
-  let hudTickTimer = null
-  let hudStartTime = 0  // currentTime when stream was started
-  const hudLiveUrl = $derived(hudStreaming ? hudStreamUrl() : null)
   // HUD download (pre-render to MP4)
   let dlRendering = $state(false)
   let dlReady = $state(false)
@@ -84,6 +76,12 @@
   let hevcSupported = $state(null)  // null=checking, true/false
   let hdSource = $state(null)
   let isFullscreen = $state(false)
+
+  // HUD overlay state
+  let showHud = $state(false)
+  let hudFrames = $state([])
+  let hudLoading = $state(false)
+  let hudLoadedRange = $state(null)  // {start, end} of loaded segment range
 
   let noteText = $state('')
   let editingNote = $state(false)
@@ -218,11 +216,7 @@
   onDestroy(() => {
     document.removeEventListener('fullscreenchange', onFullscreenChange)
     document.removeEventListener('webkitfullscreenchange', onFullscreenChange)
-    // Stop HUD stream if active when navigating away
-    if (hudPollTimer) { clearInterval(hudPollTimer); hudPollTimer = null }
     if (dlPollTimer) { clearInterval(dlPollTimer); dlPollTimer = null }
-    stopHudTick()
-    if (hudWanted) stopHudStream().catch(() => {})
   })
 
   function goBack() {
@@ -258,6 +252,8 @@
       return
     }
     currentTime = t
+    // Ensure HUD data is loaded for current position
+    if (showHud) ensureHudData(t)
   }
 
   function handlePlay() {
@@ -274,6 +270,50 @@
 
   function handleSourceChange(sourceId) {
     hdSource = sourceId
+  }
+
+  async function toggleHudOverlay() {
+    showHud = !showHud
+    if (showHud && !hudFrames.length && route) {
+      // Load HUD data for the visible range (or full route)
+      hudLoading = true
+      const start = selectionStart || 0
+      const end = selectionEnd > 0 ? selectionEnd : duration || ((route.maxqlog + 1) * 60)
+      try {
+        hudFrames = await fetchHudData(route.local_id, start, end)
+        hudLoadedRange = { start, end }
+      } catch (e) {
+        console.warn('HUD data load failed:', e)
+      }
+      hudLoading = false
+    }
+  }
+
+  // Load more HUD data when playback moves outside loaded range
+  async function ensureHudData(t) {
+    if (!showHud || !route || hudLoading) return
+    if (hudLoadedRange && t >= hudLoadedRange.start && t <= hudLoadedRange.end) return
+
+    // Load the segment containing t (± 1 segment buffer)
+    const seg = Math.floor(t / 60)
+    const start = Math.max(0, (seg - 1)) * 60
+    const end = Math.min((seg + 2) * 60, (route.maxqlog + 1) * 60)
+    hudLoading = true
+    try {
+      const newFrames = await fetchHudData(route.local_id, start, end)
+      // Merge with existing frames, dedup by time
+      const existing = new Set(hudFrames.map(f => f.t))
+      hudFrames = [...hudFrames, ...newFrames.filter(f => !existing.has(f.t))].sort((a, b) => a.t - b.t)
+      if (hudLoadedRange) {
+        hudLoadedRange = {
+          start: Math.min(hudLoadedRange.start, start),
+          end: Math.max(hudLoadedRange.end, end),
+        }
+      } else {
+        hudLoadedRange = { start, end }
+      }
+    } catch {}
+    hudLoading = false
   }
 
   async function handleScreenshot() {
@@ -298,79 +338,10 @@
     }
   }
 
-  function stopHudTick() {
-    if (hudTickTimer) { clearInterval(hudTickTimer); hudTickTimer = null }
-  }
-
-  function startHudTick() {
-    stopHudTick()
-    hudStartTime = currentTime
-    const endTime = (selectionEnd > 0) ? selectionEnd : duration
-    // Advance playhead at 1s/s — replay runs at real-time, one pass only
-    hudTickTimer = setInterval(() => {
-      currentTime += 1
-      if (endTime > 0 && currentTime >= endTime) {
-        // Reached end — stop stream, return to normal video
-        stopHudTick()
-        hudWanted = false
-        hudStreaming = false
-        hudMode = null
-        stopHudStream().catch(() => {})
-        restoreVideoDefaults()
-      }
-    }, 1000)
-  }
-
   function restoreVideoDefaults() {
-    // Restore normal video playback after HUD stream or download finishes
     videoPlayer?.setPlaybackRate(1.0)
     videoPlayer?.pause()
     isPlaying = false
-  }
-
-  async function toggleHud() {
-    if (hudWanted) {
-      // Turning off — stop stream and restore normal video
-      hudWanted = false
-      if (hudPollTimer) { clearInterval(hudPollTimer); hudPollTimer = null }
-      stopHudTick()
-      hudStarting = false
-      hudStreaming = false
-      hudError = null
-      stopHudStream().catch(() => {})
-      restoreVideoDefaults()
-      return
-    }
-    hudWanted = true
-    hudStarting = true
-    hudStreaming = false
-    hudError = null
-    try {
-      await startHudStream(route.local_id, currentTime)
-      // Poll for streaming status
-      hudPollTimer = setInterval(async () => {
-        try {
-          const s = await hudStreamStatus()
-          if (s.status === 'streaming') {
-            clearInterval(hudPollTimer)
-            hudPollTimer = null
-            hudStarting = false
-            hudStreaming = true
-            startHudTick()
-          } else if (s.status === 'error') {
-            clearInterval(hudPollTimer)
-            hudPollTimer = null
-            hudStarting = false
-            hudError = s.error || 'Stream failed'
-            hudWanted = false
-          }
-        } catch { /* ignore poll errors */ }
-      }, 2000)
-    } catch (e) {
-      hudStarting = false
-      hudError = e.message
-      hudWanted = false
-    }
   }
 
   function formatRemaining(sec) {
@@ -493,6 +464,43 @@
     if (!route) return
     metaBookmarks = metaBookmarks.filter((_, i) => i !== index)
     deleteBookmark(route.local_id, index).catch(() => {})
+  }
+
+  let bookmarkExportBusy = $state(-1)  // index of bookmark being exported, -1 = none
+
+  async function exportBookmarkFrame(index) {
+    if (!route || bookmarkExportBusy >= 0) return
+    bookmarkExportBusy = index
+    try {
+      const bm = metaBookmarks[index]
+      const epoch = (route.create_time || 0) + bm.time_sec
+
+      // Try HUD screenshot first (captured live with overlay)
+      let res, filename
+      try {
+        res = await fetchScreenshotByTime(epoch)
+        const cd = res.headers.get('Content-Disposition') || ''
+        const match = cd.match(/filename="?([^"]+)"?/)
+        filename = match ? match[1] : `hud_${Math.round(bm.time_sec)}s.png`
+      } catch {
+        // No HUD screenshot — fall back to plain fcamera JPEG with EXIF
+        res = await takeScreenshot(route.local_id, bm.time_sec, 'fcamera')
+        const cd = res.headers.get('Content-Disposition') || ''
+        const match = cd.match(/filename="?([^"]+)"?/)
+        filename = match ? match[1] : 'screenshot.jpg'
+      }
+
+      const blob = await res.blob()
+      const a = document.createElement('a')
+      a.href = URL.createObjectURL(blob)
+      a.download = filename
+      a.click()
+      URL.revokeObjectURL(a.href)
+    } catch (e) {
+      console.error('Bookmark export failed:', e)
+    } finally {
+      bookmarkExportBusy = -1
+    }
   }
 
   let activeTab = $state('map')
@@ -704,16 +712,6 @@
     }
   }
 
-  function handleHudStream() {
-    hudMode = 'stream'
-    toggleHud()
-  }
-
-  function stopHudStream_mode() {
-    hudMode = null
-    toggleHud()  // toggleHud sees hudWanted=true and stops
-  }
-
   function handleHudDownload() {
     hudMode = 'download'
   }
@@ -799,18 +797,27 @@
         {/if}
 
         <div class="relative overflow-hidden" class:fullscreen-video={isFullscreen}
-          class:rounded-xl={!hudLiveUrl && !isFullscreen}
-          class:hud-corners={!!hudLiveUrl}
+          class:rounded-xl={!isFullscreen}
           class:recording-border-static={dlRendering && dlPhase !== 'recording'}
           class:recording-border-blink={dlRendering && dlPhase === 'recording'}
           style={!hudMode && engagementColor ? `border: ${isFullscreen ? '6px' : '8px'} solid ${engagementColor}` : ''}>
+          <!-- Live render preview (MJPEG) during HUD Download recording -->
+          {#if dlRendering && dlPhase === 'recording' && route}
+            <img
+              src={`/v1/route/${route.local_id}/hud/preview`}
+              class="absolute inset-0 w-full h-full object-contain bg-black z-30"
+              alt="Render preview"
+            />
+          {/if}
           <VideoPlayer
             bind:this={videoPlayer}
             {route}
             {files}
-            {hudLiveUrl}
             {hdSource}
             frozen={dlRendering}
+            useMjpeg={hevcSupported === false && !hdSource}
+            {hudFrames}
+            {showHud}
             {selectionStart}
             {selectionEnd}
             bind:currentTime
@@ -818,7 +825,7 @@
             onTimeUpdate={handleTimeUpdate}
             onPlay={handlePlay}
             onPause={handlePause}
-            onHudStream={!enriching && !hudMode ? handleHudStream : undefined}
+            onHudToggle={!enriching ? toggleHudOverlay : undefined}
             onHudDownload={!enriching && !hudMode ? handleHudDownload : undefined}
             onHevcFailed={() => { hevcSupported = false; hdSource = null }}
           />
@@ -850,24 +857,7 @@
         </div>
 
         {#if !isFullscreen && !enriching}
-          {#if hudMode === 'stream'}
-            <!-- HUD Stream active panel -->
-            <div class="flex items-center justify-between h-8 px-2">
-              <div class="flex items-center gap-2">
-                {#if hudStarting}
-                  <div class="w-3 h-3 border-2 border-engage-green border-t-transparent rounded-full animate-spin"></div>
-                  <span class="text-xs text-surface-400">Starting stream...</span>
-                {:else if hudStreaming}
-                  <div class="w-2 h-2 bg-red-500 rounded-full animate-pulse"></div>
-                  <span class="text-xs text-surface-400">HUD UI Preview</span>
-                {:else if hudError}
-                  <span class="text-xs text-red-400">{hudError}</span>
-                {/if}
-              </div>
-              <button class="btn-sm bg-red-600 hover:bg-red-500 text-white px-3 py-1 rounded text-xs"
-                onclick={stopHudStream_mode}>Stop</button>
-            </div>
-          {:else if hudMode === 'download'}
+          {#if hudMode === 'download'}
             <!-- HUD Download panel -->
             {#if !dlRendering && !dlReady}
               <div class="flex items-center justify-between h-8 px-2">
@@ -1252,6 +1242,16 @@
                             onclick={() => { editingBookmarkIdx = i; editingBookmarkLabel = bm.label }}
                           >{bm.label}</button>
                         {/if}
+                        <button
+                          class="shrink-0 text-surface-500/40 hover:text-surface-200 opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer p-1 {bookmarkExportBusy === i ? 'animate-pulse' : ''}"
+                          title="Export HD frame with EXIF"
+                          onclick={() => exportBookmarkFrame(i)}
+                          disabled={bookmarkExportBusy >= 0}
+                        >
+                          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4">
+                            <path fill-rule="evenodd" d="M1 8a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 018.07 3h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0016.07 6H17a2 2 0 012 2v7a2 2 0 01-2 2H3a2 2 0 01-2-2V8zm13.5 3a4.5 4.5 0 11-9 0 4.5 4.5 0 019 0zM10 14a3 3 0 100-6 3 3 0 000 6z" clip-rule="evenodd" />
+                          </svg>
+                        </button>
                         <button
                           class="shrink-0 text-red-500/40 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer p-1"
                           title="Delete bookmark"

@@ -17,14 +17,12 @@ from aiohttp import web
 
 logger = logging.getLogger("connect")
 
-COD_DIR = '/data/connect_on_device'
-VERSION_FILE = os.path.join(COD_DIR, 'VERSION')
-GITHUB_REPO = 'catpilot-dev/connect'
-GITHUB_API = f'https://api.github.com/repos/{GITHUB_REPO}/releases/latest'
+from config import (COD_DIR, PLUGINS_REPO_DIR as PLUGIN_REPO_DIR, OPENPILOT_DIR,
+                     BUILD_HASH_FILE)
 
-PLUGIN_REPO_DIR = '/data/catpilot-plugins'
-OPENPILOT_DIR = '/data/openpilot'
-BUILD_HASH_FILE = '/tmp/plugin_build_hash'
+VERSION_FILE = os.path.join(COD_DIR, 'VERSION')
+GITHUB_REPO = 'catpilot-dev/connect-on-device'
+GITHUB_API = f'https://api.github.com/repos/{GITHUB_REPO}/releases/latest'
 
 CACHE_TTL = 600  # 10 minutes
 FETCH_TIMEOUT = 15  # seconds
@@ -106,6 +104,18 @@ async def _git_rev_parse(repo_dir, ref='HEAD'):
     return stdout.decode().strip()
 
 
+async def _git_current_branch(repo_dir):
+    """Get the current branch name."""
+    proc = await asyncio.create_subprocess_exec(
+        'git', '-C', repo_dir, 'rev-parse', '--abbrev-ref', 'HEAD',
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, _ = await proc.communicate()
+    if proc.returncode != 0:
+        return 'main'
+    return stdout.decode().strip() or 'main'
+
+
 async def _git_fetch(repo_dir, timeout=FETCH_TIMEOUT):
     """Fetch from origin with timeout. Returns True on success."""
     try:
@@ -120,10 +130,10 @@ async def _git_fetch(repo_dir, timeout=FETCH_TIMEOUT):
         return False
 
 
-async def _git_log_summary(repo_dir, max_lines=5):
-    """Get oneline log of commits between HEAD and origin/main."""
+async def _git_log_summary(repo_dir, branch, max_lines=5):
+    """Get oneline log of commits between HEAD and origin/<branch>."""
     proc = await asyncio.create_subprocess_exec(
-        'git', '-C', repo_dir, 'log', '--oneline', f'-{max_lines}', 'HEAD..origin/main',
+        'git', '-C', repo_dir, 'log', '--oneline', f'-{max_lines}', f'HEAD..origin/{branch}',
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
     )
     stdout, _ = await proc.communicate()
@@ -132,29 +142,40 @@ async def _git_log_summary(repo_dir, max_lines=5):
     return stdout.decode().strip()
 
 
+async def _get_target_branch():
+    """Get the target branch for plugins — aligned to catpilot's branch."""
+    if os.path.isdir(os.path.join(OPENPILOT_DIR, '.git')):
+        catpilot_branch = await _git_current_branch(OPENPILOT_DIR)
+        return catpilot_branch
+    return await _git_current_branch(PLUGIN_REPO_DIR)
+
+
 async def _check_plugins():
     """Check plugin git repo for updates. Returns status dict or None."""
     if not os.path.isdir(os.path.join(PLUGIN_REPO_DIR, '.git')):
         return None
 
+    branch = await _get_target_branch()
+
     if not await _git_fetch(PLUGIN_REPO_DIR):
         current = await _git_rev_parse(PLUGIN_REPO_DIR, 'HEAD')
-        return {'available': False, 'current': current, 'latest': current, 'summary': ''}
+        return {'available': False, 'current': current, 'latest': current, 'summary': '', 'branch': branch}
 
     current = await _git_rev_parse(PLUGIN_REPO_DIR, 'HEAD')
-    latest = await _git_rev_parse(PLUGIN_REPO_DIR, 'origin/main')
+    latest = await _git_rev_parse(PLUGIN_REPO_DIR, f'origin/{branch}')
 
     if not current or not latest:
         return None
 
     available = current != latest
-    summary = await _git_log_summary(PLUGIN_REPO_DIR) if available else ''
+    summary = await _git_log_summary(PLUGIN_REPO_DIR, branch) if available else ''
 
     return {
         'available': available,
         'current': current,
         'latest': latest,
         'summary': summary,
+        'branch': branch,
     }
 
 
@@ -223,7 +244,7 @@ async def _apply_cod_update(release_info):
         with tarfile.open(tarball_path, 'r:gz') as tar:
             tar.extractall(staging)
 
-        # GitHub tarballs extract to a subdirectory (e.g., OxygenLiu-connect_on_device-abc1234/)
+        # GitHub tarballs extract to a subdirectory (e.g., catpilot-dev-connect-on-device-abc1234/)
         # Custom release assets may extract directly. Find the right root.
         extracted_dirs = [
             d for d in os.listdir(staging)
@@ -265,14 +286,15 @@ async def _apply_cod_update(release_info):
 # ─── Plugin apply: git reset + install.sh ────────────────────────────
 
 async def _apply_plugin_update():
-    """Pull plugin updates: reset to origin/main + run install.sh.
+    """Pull plugin updates: align to catpilot branch, reset + run install.sh.
 
     Returns dict with ok, changed keys.
     """
     head_before = await _git_rev_parse(PLUGIN_REPO_DIR, 'HEAD')
+    branch = await _get_target_branch()
 
     proc = await asyncio.create_subprocess_exec(
-        'git', '-C', PLUGIN_REPO_DIR, 'reset', '--hard', 'origin/main',
+        'git', '-C', PLUGIN_REPO_DIR, 'reset', '--hard', f'origin/{branch}',
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
     )
     stdout, _ = await proc.communicate()

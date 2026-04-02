@@ -12,10 +12,10 @@ logger = logging.getLogger("connect")
 
 # ─── Model management ─────────────────────────────────────────────────
 
-PYTHON_BIN = "/usr/local/venv/bin/python"
+from config import PYTHON_BIN, MODELS_DIR, PLUGINS_RUNTIME_DIR
 
-MODELS_BASE = Path("/data/models")
-PLUGINS_DIR = Path("/data/plugins")
+MODELS_BASE = Path(MODELS_DIR)
+PLUGINS_DIR = Path(PLUGINS_RUNTIME_DIR)
 PLUGIN_ID = "model_selector"
 
 

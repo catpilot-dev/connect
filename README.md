@@ -65,8 +65,8 @@ ssh comma@<device_ip>
 
 # Clone and start
 cd /data
-git clone https://github.com/catpilot-dev/connect.git connect_on_device
-cd connect_on_device && bash setup_service.sh
+git clone https://github.com/catpilot-dev/connect-on-device.git connect-on-device
+cd connect-on-device && bash setup_service.sh
 ```
 
 ### Local development

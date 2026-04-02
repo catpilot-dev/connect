@@ -1,23 +1,115 @@
-"""Plugin management handlers — list and toggle plugins via .disabled marker."""
+"""Plugin management handlers.
+
+Proxies plugin listing and toggle operations through plugind's REST API
+(localhost:8083) when available. Falls back to direct filesystem scanning
+when plugind isn't running (e.g. during initial setup or offroad reboot).
+
+Repo management (clone/pull/install) is COD-specific and always direct.
+"""
 import asyncio
 import json
 import logging
 import os
+import urllib.request
+import urllib.error
 
 from aiohttp import web
 
+from config import (PLUGINS_RUNTIME_DIR, PLUGINS_REPO_DIR, OPENPILOT_DIR,
+                     BUILD_HASH_FILE, PLUGIND_API_URL)
 from handler_helpers import error_response, read_param, write_param, read_plugin_param, write_plugin_param
 from .params import MAPD_PARAM_KEYS, update_mapd_settings
 
 logger = logging.getLogger("connect")
 
-PLUGINS_DIR = '/data/plugins'
-PIDS_DIR = os.path.join(PLUGINS_DIR, '.pids')
+PIDS_DIR = os.path.join(PLUGINS_RUNTIME_DIR, '.pids')
 IS_C3 = os.path.exists('/TICI')
-BUILD_HASH_FILE = '/tmp/plugin_build_hash'
-PLUGIN_REPO_DIR = '/data/catpilot-plugins'
-OPENPILOT_DIR = '/data/openpilot'
 DEFAULT_PLUGIN_REPO_URL = 'https://github.com/catpilot-dev/plugins'
+
+# Display sort order for plugin list
+_SORT_ORDER = {
+  'model_selector': -3, 'lane_centering': -2, 'speedlimitd': -1,
+  'mapd': 0, 'bmw_e9x_e8x': 1, 'c3_compat': 2,
+}
+
+
+# ── Plugind API proxy ─────────────────────────────────────────────
+
+
+def _plugind_get(path: str) -> list | dict | None:
+  """GET from plugind's internal API. Returns parsed JSON or None on failure."""
+  try:
+    req = urllib.request.Request(f"{PLUGIND_API_URL}{path}")
+    with urllib.request.urlopen(req, timeout=2) as resp:
+      return json.loads(resp.read())
+  except Exception:
+    return None
+
+
+def _plugind_put(path: str) -> dict | None:
+  """PUT to plugind's internal API. Returns parsed JSON or None on failure."""
+  try:
+    req = urllib.request.Request(f"{PLUGIND_API_URL}{path}", method='PUT')
+    with urllib.request.urlopen(req, timeout=5) as resp:
+      return json.loads(resp.read())
+  except Exception:
+    return None
+
+
+def _enrich_from_plugind(plugind_plugins: list) -> list:
+  """Transform plugind's get_status() response into COD's richer format.
+
+  plugind returns: id, name, version, type, enabled, loaded, error,
+                   hooks, params, dependencies, conflicts, device_filter
+  COD frontend expects: + description, author, locked, panel, settings, processes
+  """
+  plugins = []
+  for p in plugind_plugins:
+    plugin_id = p['id']
+    plugin_dir = os.path.join(PLUGINS_RUNTIME_DIR, plugin_id)
+
+    # Read manifest for fields plugind doesn't expose
+    manifest = _read_manifest(plugin_dir)
+
+    # Device filter check
+    device_filter = p.get('device_filter')
+    if device_filter:
+      device_type = 'tici' if IS_C3 else 'unknown'
+      if device_type not in device_filter:
+        continue
+
+    locked = os.path.exists(os.path.join(plugin_dir, '.enforced'))
+
+    plugins.append({
+      'id': plugin_id,
+      'name': p.get('name', plugin_id),
+      'version': p.get('version', ''),
+      'type': p.get('type', 'plugin'),
+      'description': manifest.get('description', ''),
+      'author': manifest.get('author', ''),
+      'enabled': True if locked else p.get('enabled', False),
+      'locked': locked,
+      'dependencies': p.get('dependencies', []),
+      'panel': manifest.get('panel', False),
+      'settings': _read_plugin_params(plugin_id, manifest),
+      'processes': _get_process_status(manifest) if p.get('enabled') else [],
+    })
+
+  plugins.sort(key=lambda p: (_SORT_ORDER.get(p['id'], 0), p['id']))
+  return plugins
+
+
+# ── Filesystem fallback (when plugind is not running) ──────────────
+
+
+def _read_manifest(plugin_dir: str) -> dict:
+  """Read plugin.json manifest from a plugin directory."""
+  manifest_path = os.path.join(plugin_dir, 'plugin.json')
+  try:
+    with open(manifest_path) as f:
+      return json.load(f)
+  except (json.JSONDecodeError, OSError, FileNotFoundError):
+    return {}
 
 
 def _check_process_running(pid_name):
@@ -27,7 +119,6 @@ def _check_process_running(pid_name):
     with open(pid_file) as f:
       pid = int(f.read().strip())
     os.kill(pid, 0)
-    # Check it's not a zombie
     with open(f'/proc/{pid}/status') as f:
       for line in f:
         if line.startswith('State:'):
@@ -49,10 +140,7 @@ def _get_process_status(manifest):
 
 
 def _read_plugin_params(plugin_id, manifest):
-  """Read UI-visible params (those with a 'desc' field) and their current values.
-
-  Params are stored in /data/plugins/<id>/data/<key>.
-  """
+  """Read UI-visible params (those with a 'desc' field) and their current values."""
   params_def = manifest.get('params', {})
 
   settings = []
@@ -75,10 +163,8 @@ def _read_plugin_params(plugin_id, manifest):
     if 'requiresPlugin' in meta:
       entry['requiresPlugin'] = meta['requiresPlugin']
 
-    # Read current value from plugin data dir
     raw = read_plugin_param(plugin_id, key)
 
-    # Parse value based on type
     ptype = meta.get('type', 'string')
     if ptype == 'bool':
       entry['value'] = raw == "1"
@@ -95,33 +181,26 @@ def _read_plugin_params(plugin_id, manifest):
   return settings
 
 
-def _scan_plugins():
-  """Scan /data/plugins/ and return list of plugin info dicts."""
-  if not os.path.isdir(PLUGINS_DIR):
+def _scan_plugins_filesystem():
+  """Scan plugins runtime dir directly. Used when plugind API is unavailable."""
+  if not os.path.isdir(PLUGINS_RUNTIME_DIR):
     return []
 
   plugins = []
-  for name in sorted(os.listdir(PLUGINS_DIR)):
-    plugin_dir = os.path.join(PLUGINS_DIR, name)
+  for name in sorted(os.listdir(PLUGINS_RUNTIME_DIR)):
+    plugin_dir = os.path.join(PLUGINS_RUNTIME_DIR, name)
     if not os.path.isdir(plugin_dir):
       continue
-    manifest_path = os.path.join(plugin_dir, 'plugin.json')
-    if not os.path.exists(manifest_path):
-      continue
-    try:
-      with open(manifest_path) as f:
-        manifest = json.load(f)
-    except (json.JSONDecodeError, OSError):
+    manifest = _read_manifest(plugin_dir)
+    if not manifest:
       continue
 
-    # Filter by device_filter: hide plugins not meant for this device
     device_filter = manifest.get('device_filter')
     if device_filter:
       device_type = 'tici' if IS_C3 else 'unknown'
       if device_type not in device_filter:
         continue
 
-    # Enforced plugins are always enabled, not toggleable
     locked = os.path.exists(os.path.join(plugin_dir, '.enforced'))
     enabled = True if locked else not os.path.exists(os.path.join(plugin_dir, '.disabled'))
 
@@ -140,35 +219,60 @@ def _scan_plugins():
       'processes': _get_process_status(manifest) if enabled else [],
     })
 
-  # Sort order: model_selector first, bmw and c3_compat at bottom
-  ORDER = {'model_selector': -3, 'lane_centering': -2, 'speedlimitd': -1, 'mapd': 0, 'bmw_e9x_e8x': 1, 'c3_compat': 2}
-  plugins.sort(key=lambda p: (ORDER.get(p['id'], 0), p['id']))
+  plugins.sort(key=lambda p: (_SORT_ORDER.get(p['id'], 0), p['id']))
   return plugins
 
 
+# ── Handlers ───────────────────────────────────────────────────────
+
+
 async def handle_plugins_get(request: web.Request) -> web.Response:
-  """GET /v1/plugins — list all installed plugins with enabled state."""
-  return web.json_response(_scan_plugins())
+  """GET /v1/plugins — list plugins, proxying through plugind when available."""
+  # Try plugind API first (authoritative source of enabled/loaded state)
+  plugind_data = _plugind_get('/v1/plugins')
+  if plugind_data is not None and isinstance(plugind_data, list):
+    plugins = _enrich_from_plugind(plugind_data)
+  else:
+    plugins = _scan_plugins_filesystem()
+  return web.json_response(plugins)
 
 
 async def handle_plugin_toggle(request: web.Request) -> web.Response:
-  """POST /v1/plugins/{plugin_id}/toggle — toggle enable/disable state."""
+  """POST /v1/plugins/{plugin_id}/toggle — toggle enable/disable.
+
+  Tries plugind API first for immediate hot-reload effect.
+  Falls back to filesystem marker if plugind is unavailable.
+  """
   plugin_id = request.match_info['plugin_id']
-  plugin_dir = os.path.join(PLUGINS_DIR, plugin_id)
+  plugin_dir = os.path.join(PLUGINS_RUNTIME_DIR, plugin_id)
 
   if not os.path.isdir(plugin_dir):
     return error_response(f"Plugin '{plugin_id}' not found", 404)
   if not os.path.exists(os.path.join(plugin_dir, 'plugin.json')):
     return error_response(f"Plugin '{plugin_id}' has no plugin.json", 400)
 
+  # Determine current state and desired state
   marker = os.path.join(plugin_dir, '.disabled')
-  if os.path.exists(marker):
-    os.remove(marker)
-    enabled = True
+  currently_disabled = os.path.exists(marker)
+  want_enable = currently_disabled
+
+  # Try plugind API for immediate effect
+  if want_enable:
+    result = _plugind_put(f'/v1/plugins/{plugin_id}/enable')
   else:
-    with open(marker, 'w') as f:
-      f.write('')
-    enabled = False
+    result = _plugind_put(f'/v1/plugins/{plugin_id}/disable')
+
+  if result is not None:
+    enabled = result.get('enabled', want_enable)
+  else:
+    # Fallback: toggle filesystem marker directly
+    if currently_disabled:
+      os.remove(marker)
+      enabled = True
+    else:
+      with open(marker, 'w') as f:
+        f.write('')
+      enabled = False
 
   # Force builder rebuild on next boot
   try:
@@ -186,16 +290,13 @@ async def handle_plugin_toggle(request: web.Request) -> web.Response:
 async def handle_plugin_param(request: web.Request) -> web.Response:
   """POST /v1/plugins/{plugin_id}/param — set a plugin param {key, value}."""
   plugin_id = request.match_info['plugin_id']
-  plugin_dir = os.path.join(PLUGINS_DIR, plugin_id)
+  plugin_dir = os.path.join(PLUGINS_RUNTIME_DIR, plugin_id)
 
   if not os.path.isdir(plugin_dir):
     return error_response(f"Plugin '{plugin_id}' not found", 404)
 
-  manifest_path = os.path.join(plugin_dir, 'plugin.json')
-  try:
-    with open(manifest_path) as f:
-      manifest = json.load(f)
-  except (json.JSONDecodeError, OSError, FileNotFoundError):
+  manifest = _read_manifest(plugin_dir)
+  if not manifest:
     return error_response(f"Plugin '{plugin_id}' has no valid plugin.json", 400)
 
   try:
@@ -234,13 +335,12 @@ async def handle_plugin_param(request: web.Request) -> web.Response:
 async def handle_plugin_repo_get(request: web.Request) -> web.Response:
   """GET /v1/plugins/repo — return repo URL, installed status, last updated time."""
   url = read_param('PluginRepoUrl') or DEFAULT_PLUGIN_REPO_URL
-  installed = os.path.isdir(os.path.join(PLUGIN_REPO_DIR, '.git'))
+  installed = os.path.isdir(os.path.join(PLUGINS_REPO_DIR, '.git'))
   last_updated = None
   if installed:
     try:
-      git_fetch_head = os.path.join(PLUGIN_REPO_DIR, '.git', 'FETCH_HEAD')
-      git_head = os.path.join(PLUGIN_REPO_DIR, '.git', 'HEAD')
-      # Use FETCH_HEAD mtime (last pull), fall back to HEAD mtime
+      git_fetch_head = os.path.join(PLUGINS_REPO_DIR, '.git', 'FETCH_HEAD')
+      git_head = os.path.join(PLUGINS_REPO_DIR, '.git', 'HEAD')
       ref = git_fetch_head if os.path.exists(git_fetch_head) else git_head
       last_updated = os.path.getmtime(ref)
     except OSError:
@@ -272,12 +372,10 @@ async def handle_plugin_repo_install(request: web.Request) -> web.Response:
   url = read_param('PluginRepoUrl') or DEFAULT_PLUGIN_REPO_URL
 
   try:
-    # Clone or fetch+reset
     is_clone = False
-    if os.path.isdir(os.path.join(PLUGIN_REPO_DIR, '.git')):
-      # Get current HEAD before fetch
+    if os.path.isdir(os.path.join(PLUGINS_REPO_DIR, '.git')):
       proc = await asyncio.create_subprocess_exec(
-        'git', '-C', PLUGIN_REPO_DIR, 'rev-parse', 'HEAD',
+        'git', '-C', PLUGINS_REPO_DIR, 'rev-parse', 'HEAD',
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
       )
       stdout, _ = await proc.communicate()
@@ -285,7 +383,7 @@ async def handle_plugin_repo_install(request: web.Request) -> web.Response:
 
       logger.info("Plugin repo: fetching %s", url)
       proc = await asyncio.create_subprocess_exec(
-        'git', '-C', PLUGIN_REPO_DIR, 'fetch', 'origin',
+        'git', '-C', PLUGINS_REPO_DIR, 'fetch', 'origin',
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
       )
       stdout, _ = await proc.communicate()
@@ -298,9 +396,8 @@ async def handle_plugin_repo_install(request: web.Request) -> web.Response:
           'reboot_required': False,
         }, status=500)
 
-      # Reset to match remote (local changes are from boot_patch.sh, safe to discard)
       proc = await asyncio.create_subprocess_exec(
-        'git', '-C', PLUGIN_REPO_DIR, 'reset', '--hard', 'origin/main',
+        'git', '-C', PLUGINS_REPO_DIR, 'reset', '--hard', 'origin/main',
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
       )
     else:
@@ -308,7 +405,7 @@ async def handle_plugin_repo_install(request: web.Request) -> web.Response:
       head_before = None
       logger.info("Plugin repo: cloning %s", url)
       proc = await asyncio.create_subprocess_exec(
-        'git', 'clone', '--depth=1', url, PLUGIN_REPO_DIR,
+        'git', 'clone', '--depth=1', url, PLUGINS_REPO_DIR,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
       )
     stdout, _ = await proc.communicate()
@@ -322,8 +419,7 @@ async def handle_plugin_repo_install(request: web.Request) -> web.Response:
         'reboot_required': False,
       }, status=500)
 
-    # Run install.sh
-    install_script = os.path.join(PLUGIN_REPO_DIR, 'install.sh')
+    install_script = os.path.join(PLUGINS_REPO_DIR, 'install.sh')
     if not os.path.isfile(install_script):
       return web.json_response({
         'status': 'error',
@@ -347,9 +443,8 @@ async def handle_plugin_repo_install(request: web.Request) -> web.Response:
         'reboot_required': False,
       }, status=500)
 
-    # Check if HEAD actually changed
     proc = await asyncio.create_subprocess_exec(
-      'git', '-C', PLUGIN_REPO_DIR, 'rev-parse', 'HEAD',
+      'git', '-C', PLUGINS_REPO_DIR, 'rev-parse', 'HEAD',
       stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
     )
     stdout, _ = await proc.communicate()
@@ -357,7 +452,6 @@ async def handle_plugin_repo_install(request: web.Request) -> web.Response:
     changed = is_clone or head_before != head_after
 
     if changed:
-      # Force plugin rebuild on next boot
       try:
         os.remove(BUILD_HASH_FILE)
       except FileNotFoundError:

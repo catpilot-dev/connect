@@ -18,7 +18,8 @@ from pathlib import Path
 
 logger = logging.getLogger("connect.tiles")
 
-OSM_BASE = Path("/data/media/0/osm")
+from config import OSM_DIR
+OSM_BASE = Path(OSM_DIR)
 OSM_OFFLINE = OSM_BASE / "offline"
 OSM_TMP = OSM_BASE / "tmp"
 

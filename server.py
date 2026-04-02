@@ -6,7 +6,7 @@ Implements the same REST API as api.comma.ai so the asiusai/connect React
 frontend works unchanged. Serves route data from /data/media/0/realdata/.
 
 Usage:
-  On C3:  /usr/local/venv/bin/python /data/connect_on_device/server.py
+  On C3:  /usr/local/venv/bin/python /data/connect-on-device/server.py
   Local:  python server.py --data-dir ~/driving_data/data
 """
 
@@ -17,6 +17,7 @@ from pathlib import Path
 
 from aiohttp import web
 
+from health import run_startup_checks, run_periodic_checks, get_health_status
 from handlers import (
     cors_middleware,
     handle_auth,
@@ -31,18 +32,15 @@ from handlers import (
     handle_device_stats,
     handle_devices,
     handle_hud_cancel,
+    handle_hud_render_preview,
     handle_hud_prerender,
     handle_hud_progress,
-    handle_hud_stream_serve,
     handle_screencast_start,
     handle_screencast_seek,
     handle_screencast_pause,
     handle_screencast_resume,
     handle_screencast_stop,
     handle_screencast_status,
-    handle_hud_stream_start,
-    handle_hud_stream_status,
-    handle_hud_stream_stop,
     handle_hud_video,
     handle_me,
     handle_models_active,
@@ -85,6 +83,7 @@ from handlers import (
     handle_routes_list,
     handle_routes_segments,
     handle_camera_segment,
+    handle_mjpeg_stream,
     handle_qcamera_hls_manifest,
     handle_qcamera_hls_segment,
     handle_frame,
@@ -107,14 +106,24 @@ from handlers import (
     handle_plugin_repo_get,
     handle_plugin_repo_set,
     handle_plugin_repo_install,
+    handle_screenshots_list,
+    handle_screenshot_serve,
+    handle_screenshot_delete,
+    handle_screenshot_by_time,
     handle_updates_check,
     handle_updates_apply,
     handle_ssh_keys_get,
     handle_ssh_keys_set,
     handle_ssh_keys_delete,
+    handle_ice_servers,
     handle_webrtc,
+    handle_webrtc_health,
+    handle_driving_ws,
+    handle_hud_data,
+    handle_home_ws,
+    handle_ui_stream,
+    handle_ui_stream_frame,
 )
-from hud_stream import HudStreamManager, is_available as hud_stream_available
 from route_store import DEFAULT_DATA_DIR, DEFAULT_PORT, RouteStore
 from storage_management import run_cleanup
 
@@ -136,6 +145,18 @@ async def _cleanup_worker(app: web.Application):
             logger.exception("Cleanup error")
 
 
+async def _health_worker(app: web.Application):
+    """Periodic health checks — runs every 60 seconds."""
+    store: RouteStore = app["store"]
+    static_dir = str(app["static_dir"])
+    while True:
+        await asyncio.sleep(60)
+        try:
+            run_periodic_checks(store=store, static_dir=static_dir)
+        except Exception:
+            logger.exception("Health check error")
+
+
 async def _startup(app: web.Application):
     """Initial route scan on server startup."""
     store: RouteStore = app["store"]
@@ -143,33 +164,30 @@ async def _startup(app: web.Application):
     logger.info("Route scan complete, %d routes found", len(store._routes))
 
     # Clean up stale render HLS temp dir (persists on /data across reboots)
-    hls_tmp = Path("/data/connect_on_device/hud_hls_tmp")
+    from config import COD_HLS_TMP_DIR
+    hls_tmp = Path(COD_HLS_TMP_DIR)
     if hls_tmp.exists():
         import shutil
         shutil.rmtree(hls_tmp, ignore_errors=True)
         logger.info("Cleaned up stale HLS temp dir")
 
-    # Start periodic storage cleanup task
-    app["cleanup_task"] = asyncio.create_task(_cleanup_worker(app))
+    # Run startup health checks
+    static_dir = str(app["static_dir"])
+    run_startup_checks(static_dir=static_dir)
 
-    # Initialize HUD stream manager if C3 binaries are available
-    if hud_stream_available():
-        app["stream_manager"] = HudStreamManager()
-        logger.info("HUD live streaming available")
-    else:
-        logger.info("HUD live streaming not available (missing C3 binaries)")
+    # Start periodic background tasks
+    app["cleanup_task"] = asyncio.create_task(_cleanup_worker(app))
+    app["health_task"] = asyncio.create_task(_health_worker(app))
+
 
 
 async def _shutdown(app: web.Application):
     """Clean shutdown — stop any active HUD stream and cleanup task."""
-    task = app.get("cleanup_task")
-    if task:
-        task.cancel()
+    for name in ("cleanup_task", "health_task"):
+        task = app.get(name)
+        if task:
+            task.cancel()
 
-    mgr = app.get("stream_manager")
-    if mgr and mgr.is_active:
-        logger.info("Stopping active HUD stream on shutdown...")
-        await mgr.stop()
 
 
 # ─── App factory ──────────────────────────────────────────────────────
@@ -218,20 +236,21 @@ def create_app(data_dir: str, static_dir: str) -> web.Application:
     app.router.add_post("/v1/route/{routeName}/screenshot", handle_screenshot)
     app.router.add_get("/v1/route/{routeName}/frame", handle_frame)
     app.router.add_get("/v1/route/{routeName}/camera/{camera_type}/{segment}", handle_camera_segment)
+    app.router.add_get("/v1/route/{routeName}/mjpeg", handle_mjpeg_stream)
     app.router.add_get("/v1/route/{routeName}/qcamera.m3u8", handle_qcamera_hls_manifest)
     app.router.add_get("/v1/route/{routeName}/qcamera_hls/{filename}", handle_qcamera_hls_segment)
+
+    # HUD overlay data (from qlogs — pre-projected model + telemetry)
+    app.router.add_get("/v1/route/{routeName}/hud_data", handle_hud_data)
 
     # HUD video rendering (pre-render to MP4)
     app.router.add_post("/v1/route/{routeName}/hud/prerender", handle_hud_prerender)
     app.router.add_post("/v1/route/{routeName}/hud/cancel", handle_hud_cancel)
     app.router.add_get("/v1/route/{routeName}/hud/progress", handle_hud_progress)
+    app.router.add_get("/v1/route/{routeName}/hud/preview", handle_hud_render_preview)
     app.router.add_get("/v1/route/{routeName}/hud/video", handle_hud_video)
 
     # HUD live streaming (DRM replay → HLS)
-    app.router.add_post("/v1/hud/stream/start", handle_hud_stream_start)
-    app.router.add_post("/v1/hud/stream/stop", handle_hud_stream_stop)
-    app.router.add_get("/v1/hud/stream/status", handle_hud_stream_status)
-    app.router.add_get("/v1/hud/stream/{filename}", handle_hud_stream_serve)
 
     # Screencast: play fcamera on C3 screen, controlled from mobile
     app.router.add_post("/v1/screencast/start", handle_screencast_start)
@@ -252,7 +271,7 @@ def create_app(data_dir: str, static_dir: str) -> web.Application:
     app.router.add_get("/v1/prime/subscription", handle_stub_error)
     app.router.add_get("/v1/prime/subscribe_info", handle_stub_error)
     app.router.add_get("/v1/storage", handle_storage)
-    app.router.add_get("/health", lambda r: web.json_response({"status": "ok"}))
+    app.router.add_get("/health", lambda r: web.json_response(get_health_status()))
 
     # BMW params
     app.router.add_get("/v1/params", handle_params_get)
@@ -316,16 +335,34 @@ def create_app(data_dir: str, static_dir: str) -> web.Application:
     app.router.add_post("/v1/ssh-keys", handle_ssh_keys_set)
     app.router.add_delete("/v1/ssh-keys", handle_ssh_keys_delete)
 
+    app.router.add_get("/api/ice-servers", handle_ice_servers)
     app.router.add_post("/api/webrtc", handle_webrtc)
+    app.router.add_get("/api/webrtc/health", handle_webrtc_health)
 
     # Dashboard telemetry (replay REST + live WebSocket)
     app.router.add_get("/v1/dashboard/telemetry/{routeName}/{segments}", handle_dashboard_telemetry)
     app.router.add_get("/ws/dashboard", handle_dashboard_ws)
 
+    # Driving page (live camera + HUD overlay WebSocket)
+    app.router.add_get("/ws/driving", handle_driving_ws)
+
+    # Home page (offroad device status WebSocket)
+    app.router.add_get("/ws/home", handle_home_ws)
+
+    # UI MJPEG stream (STREAM_UI mode — phone display)
+    app.router.add_get("/stream/ui", handle_ui_stream)
+    app.router.add_get("/stream/ui/frame", handle_ui_stream_frame)
+
     # Signal browser (catalog + data extraction)
     app.router.add_get("/v1/route/{routeName}/signals/catalog", handle_signal_catalog)
     app.router.add_get("/v1/route/{routeName}/signals/data/{msgType}/{segments}", handle_signal_data)
     app.router.add_get("/v1/route/{routeName}/signals/all/{segments}", handle_signal_all)
+
+    # Screenshots (screen capture plugin images)
+    app.router.add_get("/v1/screenshots", handle_screenshots_list)
+    app.router.add_get("/v1/screenshots/at/{epoch}", handle_screenshot_by_time)
+    app.router.add_get("/v1/screenshots/{filename}", handle_screenshot_serve)
+    app.router.add_delete("/v1/screenshots/{filename}", handle_screenshot_delete)
 
     # Media file serving
     app.router.add_get("/connectdata/{path:.*}", handle_connectdata)
@@ -340,10 +377,10 @@ def main():
     parser = argparse.ArgumentParser(description="Connect on Device - comma-compatible local server")
     parser.add_argument("--data-dir", default=DEFAULT_DATA_DIR,
                         help=f"Route data directory (default: {DEFAULT_DATA_DIR})")
-    parser.add_argument("--port", type=int, default=DEFAULT_PORT,
-                        help=f"Server port (default: {DEFAULT_PORT})")
-    parser.add_argument("--host", default="0.0.0.0",
-                        help="Bind address (default: 0.0.0.0)")
+    parser.add_argument("--port", type=int, default=80,
+                        help="Server port (default: 80)")
+    parser.add_argument("--host", default=None,
+                        help="Bind address (default: 0.0.0.0 + :: for dual-stack)")
     parser.add_argument("--static-dir", default=None,
                         help="Static files directory (default: ./static next to server.py)")
     args = parser.parse_args()
@@ -352,13 +389,17 @@ def main():
 
     static_dir = args.static_dir or str(Path(__file__).parent / "static")
 
+    # Listen on both IPv4 and IPv6 by default so hotspot (IPv6-only carriers)
+    # and LAN (IPv4) both work.  A single explicit --host overrides to that only.
+    host = args.host or ["0.0.0.0", "::"]
+
     logger.info("Starting Connect on Device (comma-compatible API)")
     logger.info("  Data dir:   %s", args.data_dir)
     logger.info("  Static dir: %s", static_dir)
-    logger.info("  Listening:  http://%s:%d", args.host, args.port)
+    logger.info("  Listening:  http://*:%d  (IPv4 + IPv6)", args.port)
 
     app = create_app(args.data_dir, static_dir)
-    web.run_app(app, host=args.host, port=args.port, print=None)
+    web.run_app(app, host=host, port=args.port, print=None)
 
 
 if __name__ == "__main__":

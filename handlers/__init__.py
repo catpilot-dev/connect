@@ -42,6 +42,7 @@ from .media import (
     handle_screenshot,
     handle_frame,
     handle_camera_segment,
+    handle_mjpeg_stream,
     handle_qcamera_hls_manifest,
     handle_qcamera_hls_segment,
 )
@@ -49,12 +50,9 @@ from .media import (
 from .hud import (
     handle_hud_prerender,
     handle_hud_progress,
+    handle_hud_render_preview,
     handle_hud_cancel,
     handle_hud_video,
-    handle_hud_stream_start,
-    handle_hud_stream_stop,
-    handle_hud_stream_status,
-    handle_hud_stream_serve,
     handle_screencast_start,
     handle_screencast_seek,
     handle_screencast_pause,
@@ -104,12 +102,23 @@ from .ssh_keys import (
     handle_ssh_keys_get,
     handle_ssh_keys_set,
     handle_ssh_keys_delete,
+    handle_ice_servers,
     handle_webrtc,
+    handle_webrtc_health,
 )
 
 from .dashboard import (
     handle_dashboard_telemetry,
     handle_dashboard_ws,
+)
+
+from .driving import (
+    handle_driving_ws,
+    handle_hud_data,
+)
+
+from .home import (
+    handle_home_ws,
 )
 
 from .signals import (
@@ -132,9 +141,18 @@ from .updates import (
     handle_updates_apply,
 )
 
+from .screenshots import (
+    handle_screenshots_list,
+    handle_screenshot_serve,
+    handle_screenshot_delete,
+    handle_screenshot_by_time,
+)
+
 from .stubs import (
     handle_stub_empty_array,
     handle_stub_error,
 )
+
+from .stream import handle_ui_stream, handle_ui_stream_frame
 
 from .spa import handle_spa

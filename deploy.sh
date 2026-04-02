@@ -1,37 +1,43 @@
 #!/bin/bash
-# Deploy connect_on_device to C3
+# Deploy connect-on-device to C3 via GitHub release tarball
 # Usage: ./deploy.sh [host]
 set -e
 
-HOST="${1:-c3}"
-REMOTE_DIR="/data/connect_on_device"
+HOST="${1:-comma@10.0.0.160}"
+REMOTE_DIR="/data/connect-on-device"
 LOCAL_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO="catpilot-dev/connect-on-device"
+VERSION="$(cat "$LOCAL_DIR/VERSION")"
+TARBALL="cod-v${VERSION}.tar.gz"
+RELEASE_URL="https://github.com/${REPO}/releases/download/v${VERSION}/${TARBALL}"
 
-echo "Building frontend..."
-cd "$LOCAL_DIR/frontend"
-npm run build
+echo "Deploying COD v${VERSION} to ${HOST}:${REMOTE_DIR}"
+echo "Source: ${RELEASE_URL}"
 
-echo "Deploying to $HOST:$REMOTE_DIR..."
-ssh "$HOST" "mkdir -p $REMOTE_DIR"
+# Download tarball on device, extract, restart
+ssh "$HOST" bash -s "$REMOTE_DIR" "$RELEASE_URL" "$TARBALL" << 'REMOTE'
+set -e
+REMOTE_DIR="$1"
+RELEASE_URL="$2"
+TARBALL="$3"
 
-# Clean old layout (monolithic handlers.py replaced by handlers/ package)
-ssh "$HOST" "rm -f $REMOTE_DIR/handlers.py; rm -rf $REMOTE_DIR/handlers $REMOTE_DIR/static"
+echo "Downloading ${TARBALL}..."
+curl -fSL -o "/tmp/${TARBALL}" "$RELEASE_URL"
 
-# Copy all Python modules and setup script
-scp "$LOCAL_DIR"/*.py "$LOCAL_DIR"/setup_service.sh "$HOST:$REMOTE_DIR/"
-ssh "$HOST" "chmod +x $REMOTE_DIR/setup_service.sh"
+echo "Extracting to ${REMOTE_DIR}..."
+rm -rf "${REMOTE_DIR}/handlers" "${REMOTE_DIR}/static"
+tar xzf "/tmp/${TARBALL}" -C "${REMOTE_DIR}/" --strip-components=1
+rm "/tmp/${TARBALL}"
 
-# Copy handlers package
-scp -r "$LOCAL_DIR/handlers" "$HOST:$REMOTE_DIR/"
+echo "Version: $(cat ${REMOTE_DIR}/VERSION)"
 
-# Copy built frontend
-scp -r "$LOCAL_DIR/static" "$HOST:$REMOTE_DIR/"
-
-# Restart server
 echo "Restarting server..."
-ssh "$HOST" "$REMOTE_DIR/setup_service.sh"
-
+pkill -f 'python.*server.py' 2>/dev/null || true
 sleep 2
-ssh "$HOST" "pgrep -fa 'python.*server.py'" || echo "WARNING: server not running"
+${REMOTE_DIR}/setup_service.sh
+sleep 2
+pgrep -fa 'python.*server.py' || echo "WARNING: server not running"
+REMOTE
+
 echo ""
-echo "Deployed and running at http://$HOST:8082/"
+echo "Deployed COD v${VERSION} to ${HOST}"

@@ -1,16 +1,25 @@
-"""Tests for storage_management.py — get_storage_info and build_download_tar."""
+"""Tests for storage_management.py — get_storage_info, build_download_tar, run_cleanup."""
 
 import json
 import sys
 import tarfile
+import time
 from io import BytesIO
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from storage_management import build_download_tar, get_storage_info
+from storage_management import (
+    EMERGENCY_BYTES,
+    MIN_FREE_BYTES,
+    RECYCLE_TTL,
+    build_download_tar,
+    get_storage_info,
+    run_cleanup,
+)
 
 
 class TestGetStorageInfo:
@@ -83,3 +92,185 @@ class TestBuildDownloadTar:
                     for n in names:
                         assert "--0/" in n
                 break
+
+
+# ─── Helpers ────────────────────────────────────────────────────────
+
+def _make_disk_usage(free):
+    import collections
+    DU = collections.namedtuple("DiskUsage", ["total", "used", "free"])
+    total = 128 * 1024 ** 3
+    return DU(total=total, used=total - free, free=free)
+
+
+def _all_lids(store):
+    return list(store._raw.keys())
+
+
+def _seg_paths(store, lid):
+    return [Path(s["path"]) for s in store._raw[lid]["segments"]]
+
+
+# ─── Phase 0: expired recycled routes ───────────────────────────────
+
+class TestCleanupPhase0:
+    def test_expired_recycled_route_deleted(self, mock_store):
+        lid = _all_lids(mock_store)[0]
+        old_time = time.time() - RECYCLE_TTL - 1
+        mock_store._hidden[lid] = old_time
+        seg_paths = _seg_paths(mock_store, lid)
+
+        with patch("storage_management.shutil.disk_usage", return_value=_make_disk_usage(MIN_FREE_BYTES + 1)):
+            result = run_cleanup(mock_store)
+
+        assert any(d["route"] == lid and d["reason"] == "recycled_expired" for d in result["deleted"])
+        assert lid not in mock_store._raw
+        for p in seg_paths:
+            assert not p.exists()
+
+    def test_fresh_recycled_route_not_deleted(self, mock_store):
+        lid = _all_lids(mock_store)[0]
+        mock_store._hidden[lid] = time.time()
+
+        with patch("storage_management.shutil.disk_usage", return_value=_make_disk_usage(MIN_FREE_BYTES + 1)):
+            result = run_cleanup(mock_store)
+
+        assert not any(d["route"] == lid for d in result["deleted"])
+        assert lid in mock_store._raw
+
+
+# ─── Phase 1: normal routes when low storage ────────────────────────
+
+class TestCleanupPhase1:
+    def test_normal_route_deleted_when_low_storage(self, mock_store):
+        lid = _all_lids(mock_store)[0]
+        seg_paths = _seg_paths(mock_store, lid)
+
+        call_count = {"n": 0}
+        def fake_disk_usage(path):
+            call_count["n"] += 1
+            if call_count["n"] <= 2:
+                return _make_disk_usage(MIN_FREE_BYTES - 1)
+            return _make_disk_usage(MIN_FREE_BYTES + 1)
+
+        with patch("storage_management.shutil.disk_usage", side_effect=fake_disk_usage):
+            result = run_cleanup(mock_store)
+
+        assert any(d["route"] == lid and d["reason"] == "low_storage" for d in result["deleted"])
+        assert lid not in mock_store._raw
+        for p in seg_paths:
+            assert not p.exists()
+
+    def test_preserved_route_skipped_in_phase1(self, mock_store):
+        lids = _all_lids(mock_store)
+        for lid in lids:
+            mock_store._preserved.add(lid)
+
+        with patch("storage_management.shutil.disk_usage", return_value=_make_disk_usage(MIN_FREE_BYTES - 1)):
+            result = run_cleanup(mock_store)
+
+        assert not any(d["reason"] == "low_storage" for d in result["deleted"])
+        for lid in lids:
+            assert lid in mock_store._raw
+
+    def test_hidden_route_skipped_in_phase1(self, mock_store):
+        lid = _all_lids(mock_store)[0]
+        mock_store._hidden[lid] = time.time()
+
+        with patch("storage_management.shutil.disk_usage", return_value=_make_disk_usage(MIN_FREE_BYTES - 1)):
+            result = run_cleanup(mock_store)
+
+        assert not any(d["route"] == lid and d["reason"] == "low_storage" for d in result["deleted"])
+
+    def test_xattr_preserved_route_skipped(self, mock_store):
+        lid = _all_lids(mock_store)[0]
+
+        with patch("storage_management.shutil.disk_usage", return_value=_make_disk_usage(MIN_FREE_BYTES - 1)), \
+             patch("storage_management.has_xattr_preserve", side_effect=lambda store, l: l == lid):
+            result = run_cleanup(mock_store)
+
+        assert not any(d["route"] == lid for d in result["deleted"])
+        assert lid in mock_store._raw
+
+    def test_no_deletion_when_storage_ok(self, mock_store):
+        with patch("storage_management.shutil.disk_usage", return_value=_make_disk_usage(MIN_FREE_BYTES + 1)):
+            result = run_cleanup(mock_store)
+
+        assert not any(d["reason"] == "low_storage" for d in result["deleted"])
+
+
+# ─── Phase 2: emergency — saved routes ──────────────────────────────
+
+class TestCleanupPhase2:
+    def test_saved_route_deleted_in_emergency(self, mock_store):
+        lid = _all_lids(mock_store)[0]
+        mock_store._preserved.add(lid)
+        seg_paths = _seg_paths(mock_store, lid)
+
+        call_count = {"n": 0}
+        def fake_disk_usage(path):
+            call_count["n"] += 1
+            if call_count["n"] <= 3:
+                return _make_disk_usage(EMERGENCY_BYTES - 1)
+            return _make_disk_usage(EMERGENCY_BYTES + 1)
+
+        with patch("storage_management.shutil.disk_usage", side_effect=fake_disk_usage):
+            result = run_cleanup(mock_store)
+
+        assert any(d["route"] == lid and d["reason"] == "emergency" for d in result["deleted"])
+        assert lid not in mock_store._raw
+        for p in seg_paths:
+            assert not p.exists()
+
+    def test_xattr_preserved_saved_route_never_deleted(self, mock_store):
+        lid = _all_lids(mock_store)[0]
+        mock_store._preserved.add(lid)
+
+        with patch("storage_management.shutil.disk_usage", return_value=_make_disk_usage(EMERGENCY_BYTES - 1)), \
+             patch("storage_management.has_xattr_preserve", return_value=True):
+            result = run_cleanup(mock_store)
+
+        assert not any(d["route"] == lid and d["reason"] == "emergency" for d in result["deleted"])
+        assert lid in mock_store._raw
+
+    def test_no_emergency_deletion_when_above_threshold(self, mock_store):
+        lid = _all_lids(mock_store)[0]
+        mock_store._preserved.add(lid)
+
+        with patch("storage_management.shutil.disk_usage", return_value=_make_disk_usage(EMERGENCY_BYTES + 1)):
+            result = run_cleanup(mock_store)
+
+        assert not any(d["reason"] == "emergency" for d in result["deleted"])
+        assert lid in mock_store._raw
+
+
+# ─── _delete_route_from_disk ────────────────────────────────────────
+
+class TestDeleteRouteFromDisk:
+    def test_segments_removed_from_disk(self, mock_store):
+        lid = _all_lids(mock_store)[0]
+        seg_paths = _seg_paths(mock_store, lid)
+        assert any(p.exists() for p in seg_paths)
+
+        from storage_management import _delete_route_from_disk
+        _delete_route_from_disk(mock_store, lid)
+
+        for p in seg_paths:
+            assert not p.exists()
+
+    def test_state_cleaned_up(self, mock_store):
+        lid = _all_lids(mock_store)[0]
+        mock_store._preserved.add(lid)
+        mock_store._hidden[lid] = time.time()
+
+        from storage_management import _delete_route_from_disk
+        _delete_route_from_disk(mock_store, lid)
+
+        assert lid not in mock_store._raw
+        assert lid not in mock_store._preserved
+        assert lid not in mock_store._hidden
+        assert lid not in mock_store._metadata
+
+    def test_nonexistent_route_is_noop(self, mock_store):
+        from storage_management import _delete_route_from_disk
+        _delete_route_from_disk(mock_store, "nonexistent--route")  # must not raise

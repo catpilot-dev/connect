@@ -16,7 +16,7 @@
 
   let mapContainer = $state(null)
   let map = null
-  let positionMarker = null
+  let positionMarker = $state(null)
   let pathLayers = []
 
   // Dynamically import Leaflet (it accesses `window` on import)
@@ -56,11 +56,12 @@
 
     // Position marker
     positionMarker = L.circleMarker([0, 0], {
-      radius: 6,
-      fillColor: '#80D8A6',
+      radius: 7,
+      fillColor: '#3b82f6',
       fillOpacity: 1,
       color: '#ffffff',
       weight: 2,
+      pane: 'markerPane',  // ensure it renders above polylines
     }).addTo(map)
 
     drawPath()
@@ -129,6 +130,9 @@
       pathLayers.push(line)
     }
 
+    // Ensure position marker stays on top of path
+    if (positionMarker) positionMarker.bringToFront()
+
     // Fit bounds to selection if active, otherwise full route
     if (hasSelection) {
       const selPoints = coords
@@ -161,6 +165,7 @@
     const pt = coords[lo]
     if (pt) {
       positionMarker.setLatLng(toMapCoord(pt.lat, pt.lng))
+      positionMarker.bringToFront()
     }
   })
 

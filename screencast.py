@@ -17,42 +17,44 @@ import sys
 import threading
 import time
 
-OPENPILOT_DIR = "/data/openpilot"
-REALDATA_DIR = "/data/media/0/realdata"
+from config import OPENPILOT_DIR, REALDATA_DIR
 CONTROL_PORT = 8090
 FPS = 20
 SCREEN_W = 2160
 SCREEN_H = 1080
 
 
-def _stop_production_ui():
-    """Stop the production openpilot UI to free DRM master."""
+def _stop_manager():
+    """Stop openpilot manager (and all children) to free DRM master."""
     import subprocess
-    subprocess.run(["pkill", "-f", "selfdrive.ui.ui"], capture_output=True)
-    deadline = time.monotonic() + 3
+    subprocess.run(["pkill", "-f", "manager.py"], capture_output=True)
+    deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
-        r = subprocess.run(["pgrep", "-f", "selfdrive.ui.ui"], capture_output=True)
+        r = subprocess.run(["pgrep", "-f", "manager.py"], capture_output=True)
         if r.returncode != 0:
             break
         time.sleep(0.3)
     else:
-        subprocess.run(["pkill", "-9", "-f", "selfdrive.ui.ui"], capture_output=True)
+        subprocess.run(["pkill", "-9", "-f", "manager.py"], capture_output=True)
         time.sleep(0.5)
-
-
-def _restart_production_ui():
-    """Restart the production UI after screencast."""
-    import subprocess
-    subprocess.run(["pkill", "-f", "selfdrive.ui.ui"], capture_output=True)
+    subprocess.run(["pkill", "-9", "-f", "selfdrive.ui.ui"], capture_output=True)
     time.sleep(1)
+
+
+def _start_manager():
+    """Restart openpilot manager after screencast."""
+    import subprocess
+    MANAGER_CWD = os.path.join(OPENPILOT_DIR, "system/manager")
+    subprocess.run(["pkill", "-f", "selfdrive.ui.ui"], capture_output=True)
+    time.sleep(0.5)
     env = os.environ.copy()
-    env["PYTHONPATH"] = f"{OPENPILOT_DIR}:/data/pip_packages"
+    env["PYTHONPATH"] = OPENPILOT_DIR
     env["PATH"] = "/usr/local/venv/bin:/usr/local/bin:/usr/bin:/bin"
     env["HOME"] = os.environ.get("HOME", "/root")
     try:
         subprocess.Popen(
-            ["/usr/local/venv/bin/python", "-m", "selfdrive.ui.ui"],
-            cwd=OPENPILOT_DIR, env=env,
+            ["/usr/local/venv/bin/python", "./manager.py"],
+            cwd=MANAGER_CWD, env=env,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
@@ -116,7 +118,7 @@ class Screencast:
     def run(self):
         """Main loop: listen for commands, play video on DRM screen."""
         sys.path.insert(0, OPENPILOT_DIR)
-        os.environ["PYTHONPATH"] = f"{OPENPILOT_DIR}:/data/pip_packages"
+        os.environ["PYTHONPATH"] = OPENPILOT_DIR
 
         # Start UDP control listener
         ctrl_thread = threading.Thread(target=self._control_listener, daemon=True)
@@ -124,7 +126,7 @@ class Screencast:
 
         # Kill production UI to free DRM master
         print("Stopping production UI for DRM access...", flush=True)
-        _stop_production_ui()
+        _stop_manager()
 
         # Wait for kernel to fully release DRM resources after UI process exits
         time.sleep(1)
@@ -142,7 +144,7 @@ class Screencast:
         while not self._stop_event.is_set():
             if rl.window_should_close():
                 rl.close_window()
-                _restart_production_ui()
+                _start_manager()
                 return
 
             cmd = self._get_command()
@@ -153,7 +155,7 @@ class Screencast:
                 break
             elif cmd and cmd[0] == "STOP":
                 rl.close_window()
-                _restart_production_ui()
+                _start_manager()
                 return
 
             # Render black frame to keep DRM alive
@@ -163,14 +165,14 @@ class Screencast:
 
         if self._stop_event.is_set():
             rl.close_window()
-            _restart_production_ui()
+            _start_manager()
             return
 
         try:
             self._play_loop(rl)
         finally:
             rl.close_window()
-            _restart_production_ui()
+            _start_manager()
 
     def _play_loop(self, rl):
         """Render loop: decode fcamera → draw to DRM screen via raylib."""

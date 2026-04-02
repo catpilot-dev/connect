@@ -1,4 +1,4 @@
-"""Shared fixtures for connect_on_device test suite."""
+"""Shared fixtures for connect-on-device test suite."""
 
 import json
 import sys

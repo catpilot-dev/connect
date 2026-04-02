@@ -254,7 +254,7 @@ class TestGitLogSummary:
     async def test_returns_log_lines(self):
         proc = _make_proc(stdout=b"abc1234 Fix bug\ndef5678 Add feature\n")
         with patch("asyncio.create_subprocess_exec", return_value=proc):
-            result = await _git_log_summary("/fake/repo")
+            result = await _git_log_summary("/fake/repo", "main")
         assert "Fix bug" in result
         assert "Add feature" in result
 
@@ -262,7 +262,7 @@ class TestGitLogSummary:
     async def test_empty_on_failure(self):
         proc = _make_proc(returncode=128)
         with patch("asyncio.create_subprocess_exec", return_value=proc):
-            assert await _git_log_summary("/fake/repo") == ""
+            assert await _git_log_summary("/fake/repo", "main") == ""
 
 
 # ─── Plugins: _check_plugins ────────────────────────────────────────
@@ -481,6 +481,7 @@ class TestApplyPluginUpdate:
              patch("handlers.updates.PLUGIN_REPO_DIR", str(tmp_path)), \
              patch("handlers.updates.OPENPILOT_DIR", str(tmp_path)), \
              patch("handlers.updates._git_rev_parse", side_effect=["aaa", "bbb"]), \
+             patch("handlers.updates._get_target_branch", return_value="dev"), \
              patch("asyncio.create_subprocess_exec", side_effect=[reset_proc, install_proc]), \
              patch("os.path.isfile", return_value=True):
             result = await _apply_plugin_update()
@@ -500,6 +501,7 @@ class TestApplyPluginUpdate:
              patch("handlers.updates.PLUGIN_REPO_DIR", str(tmp_path)), \
              patch("handlers.updates.OPENPILOT_DIR", str(tmp_path)), \
              patch("handlers.updates._git_rev_parse", return_value="same"), \
+             patch("handlers.updates._get_target_branch", return_value="dev"), \
              patch("asyncio.create_subprocess_exec", return_value=reset_proc), \
              patch("os.path.isfile", return_value=False):
             result = await _apply_plugin_update()
@@ -514,6 +516,7 @@ class TestApplyPluginUpdate:
 
         with patch("handlers.updates.PLUGIN_REPO_DIR", str(tmp_path)), \
              patch("handlers.updates._git_rev_parse", return_value="aaa"), \
+             patch("handlers.updates._get_target_branch", return_value="dev"), \
              patch("asyncio.create_subprocess_exec", return_value=proc):
             result = await _apply_plugin_update()
 
@@ -528,6 +531,7 @@ class TestApplyPluginUpdate:
         with patch("handlers.updates.PLUGIN_REPO_DIR", str(tmp_path)), \
              patch("handlers.updates.OPENPILOT_DIR", str(tmp_path)), \
              patch("handlers.updates._git_rev_parse", return_value="aaa"), \
+             patch("handlers.updates._get_target_branch", return_value="dev"), \
              patch("asyncio.create_subprocess_exec", side_effect=[reset_proc, install_proc]), \
              patch("os.path.isfile", return_value=True):
             result = await _apply_plugin_update()

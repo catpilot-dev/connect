@@ -24,7 +24,9 @@ logger = logging.getLogger("connect")
 # Route directory pattern: {count}--{uid}--{segment}
 ROUTE_DIR_RE = re.compile(r"^(\w+--\w+)--(\d+)$")
 
-DEFAULT_DATA_DIR = "/data/media/0/realdata"
+from config import OPENPILOT_DIR, PARAMS_DIR, REALDATA_DIR
+
+DEFAULT_DATA_DIR = REALDATA_DIR
 DEFAULT_PORT = 8082
 CACHE_TTL = 120  # seconds — route scan is expensive with metadata
 METADATA_FILE = ".route_metadata.json"
@@ -87,9 +89,8 @@ def _route_counter(local_id: str) -> int:
         return 0
 
 # Add openpilot to path for LogReader
-for _p in ["/data/openpilot", "/home/oxygen/openpilot"]:
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
+if OPENPILOT_DIR not in sys.path:
+    sys.path.insert(0, OPENPILOT_DIR)
 
 
 class RouteStore:
@@ -142,7 +143,7 @@ class RouteStore:
 
     def _detect_dongle_id(self):
         """Read dongle_id from params or metadata."""
-        for p in ["/data/params/d/DongleId", "/home/oxygen/driving_data/data/DongleId"]:
+        for p in [f"{PARAMS_DIR}/DongleId", "/home/oxygen/driving_data/data/DongleId"]:
             try:
                 self._dongle_id = Path(p).read_text().strip()
                 return
@@ -665,7 +666,7 @@ class RouteStore:
     def _is_onroad() -> bool:
         """Check if openpilot is currently driving. Yields CPU to controls when True."""
         try:
-            return Path("/data/params/d/IsOnroad").read_bytes().strip() == b"1"
+            return Path(f"{PARAMS_DIR}/IsOnroad").read_bytes().strip() == b"1"
         except Exception:
             return False
 

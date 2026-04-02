@@ -1,7 +1,7 @@
 <script>
   import { onMount } from 'svelte'
   import { dongleId, storageInfo } from '../stores.js'
-  import { fetchRoutes, fetchStorage, scanRoute } from '../api.js'
+  import { fetchRoutes, fetchStorage, fetchHealth, scanRoute } from '../api.js'
   import { formatBytes } from '../format.js'
   import RouteCard from '../components/RouteCard.svelte'
 
@@ -10,6 +10,7 @@
   let loadingMore = $state(false)
   let hasMore = $state(false)
   let storage = $state(null)
+  let health = $state(null)
   let error = $state(null)
   let activeTab = $state('recent')
   let dateFrom = $state('')
@@ -81,12 +82,14 @@
       if (afterGps) opts.afterGps = afterGps
       if (beforeGps) opts.beforeGps = beforeGps
 
-      const [data, st] = await Promise.all([
+      const [data, st, hl] = await Promise.all([
         fetchRoutes(id, opts),
         fetchStorage(),
+        fetchHealth(),
       ])
       routes = data
       storage = st
+      health = hl
       storageInfo.set(st)
       hasMore = activeTab === 'all' && data.length >= PAGE_SIZE
       loading = false
@@ -154,6 +157,9 @@
   const datesModified = $derived(
     dateFrom !== TAB_DEFAULTS[activeTab].from() || dateTo !== TAB_DEFAULTS[activeTab].to()
   )
+  const healthIssues = $derived(
+    health?.checks?.filter(c => c.level === 'error' || c.level === 'warn') ?? []
+  )
   const usedPct = $derived(storage ? 100 - storage.percent_free : 0)
   const storedColor = $derived(
     usedPct >= 80 ? '!text-red-400' :
@@ -194,6 +200,24 @@
       <span>
         Storage low: {formatBytes(storage.free)} free of {formatBytes(storage.total)}
       </span>
+    </div>
+  {/if}
+
+  <!-- Health check warnings -->
+  {#if healthIssues.length > 0}
+    <div class="rounded-lg px-4 py-3 text-sm space-y-1
+      {health.errors > 0 ? 'bg-red-500/10 text-red-400' : 'bg-amber-500/10 text-amber-400'}">
+      <div class="flex items-center gap-2 font-medium">
+        <svg class="w-4 h-4 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+          <path fill-rule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.168 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 6a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 6zm0 9a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd"/>
+        </svg>
+        <span>System: {health.errors} error{health.errors !== 1 ? 's' : ''}, {health.warnings} warning{health.warnings !== 1 ? 's' : ''}</span>
+      </div>
+      {#each healthIssues as issue}
+        <div class="ml-6 text-xs opacity-80">
+          <span class="font-mono">{issue.name}</span>: {issue.message}
+        </div>
+      {/each}
     </div>
   {/if}
 

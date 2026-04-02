@@ -242,7 +242,7 @@
   {:else if plugins && plugins.length === 0}
     <div class="card p-6 text-center">
       <p class="text-surface-300 text-sm">No plugins installed</p>
-      <p class="text-surface-400 text-xs mt-1">Place plugins in /data/plugins/ on your device</p>
+      <p class="text-surface-400 text-xs mt-1">Place plugins in /data/plugins-runtime/ on your device</p>
     </div>
   {:else if plugins}
     {#each plugins as plugin}

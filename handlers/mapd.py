@@ -20,10 +20,10 @@ _tile_download_thread = None
 
 # ─── Mapd binary update ──────────────────────────────────────────────
 
-OPENPILOT_DIR = Path("/data/openpilot")
-PYTHON_BIN = "/usr/local/venv/bin/python"
-MAPD_MANAGER = Path("/data/plugins/mapd/mapd_manager.py")
-_MAPD_ENV = {**os.environ, "PYTHONPATH": str(OPENPILOT_DIR), "PWD": str(OPENPILOT_DIR)}
+from config import OPENPILOT_DIR, PYTHON_BIN, PLUGINS_RUNTIME_DIR
+
+MAPD_MANAGER = Path(PLUGINS_RUNTIME_DIR) / "mapd" / "mapd_manager.py"
+_MAPD_ENV = {**os.environ, "PYTHONPATH": OPENPILOT_DIR, "PWD": OPENPILOT_DIR}
 
 
 async def handle_tile_list(request: web.Request) -> web.Response:

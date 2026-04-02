@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import time
@@ -83,7 +84,12 @@ async def handle_device_get(request: web.Request) -> web.Response:
 async def handle_device_stats(request: web.Request) -> web.Response:
     """GET /v1.1/devices/{dongleId}/stats — driving statistics with engagement"""
     store = request.app["store"]
-    routes = await store.async_scan()
+    await store.async_scan()
+
+    # Ensure new routes have basic metadata (GPS time, coords) for accurate week filter
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, store.enrich_new_routes)
+    routes = store._routes
 
     week_ago = time.time() - 7 * 86400
 
