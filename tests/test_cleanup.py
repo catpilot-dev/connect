@@ -135,7 +135,7 @@ class TestPhase0ExpiredRecycled:
 
 class TestPhase1LowStorage:
     def test_deletes_oldest_first_when_low(self, tmp_path):
-        """When free < 10GB, delete oldest normal routes first."""
+        """When free < 20GB, delete oldest normal routes first."""
         # Create 3 routes — counters: 1, 5, 10 (oldest to newest)
         _make_route(tmp_path, "00000001--oldest00")
         _make_route(tmp_path, "00000005--middle00")
@@ -143,15 +143,15 @@ class TestPhase1LowStorage:
 
         store = _make_store(tmp_path, ["00000001--oldest00", "00000005--middle00", "0000000a--newest00"])
 
-        # First call: 8GB free (below 10GB threshold)
-        # After deleting one route, report 11GB so it stops
+        # First call: 15GB free (below 20GB threshold)
+        # After deleting one route, report 25GB so it stops
         call_count = {"n": 0}
         def fake_usage(path):
             call_count["n"] += 1
             if call_count["n"] <= 2:
                 # Initial check + first deletion check
-                return type("U", (), {"total": 64 * 1024**3, "used": 56 * 1024**3, "free": 8 * 1024**3})()
-            return type("U", (), {"total": 64 * 1024**3, "used": 53 * 1024**3, "free": 11 * 1024**3})()
+                return type("U", (), {"total": 64 * 1024**3, "used": 49 * 1024**3, "free": 15 * 1024**3})()
+            return type("U", (), {"total": 64 * 1024**3, "used": 39 * 1024**3, "free": 25 * 1024**3})()
 
         with patch("storage_management.shutil.disk_usage", side_effect=fake_usage):
             result = run_cleanup(store)
