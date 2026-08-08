@@ -13,12 +13,13 @@ class StubStore:
         self._hidden = set()
         self._metadata = {}
 
-    def add_route(self, lid, create_time=REAL_EPOCH, segs=(0,)):
+    def add_route(self, lid, create_time=REAL_EPOCH, segs=(0,), lng=120.0):
         self._routes[f"dongle/{lid}"] = {
             "_local_id": lid,
             "create_time": create_time,
             "dongle_id": "dongle",
             "fullname": f"dongle/{lid}",
+            "start_lng": lng,
             "_segments": [{"number": n, "path": f"/data/{lid}--{n}"} for n in segs],
         }
         self._metadata[lid] = {"route_id": lid}
@@ -33,7 +34,7 @@ def store():
 def quiet_world(monkeypatch):
     """Offroad, no existing captures, every segment has a qlog."""
     monkeypatch.setattr(sw, "is_onroad", lambda: False)
-    monkeypatch.setattr(sw, "_existing_capture_epochs", lambda: [])
+    monkeypatch.setattr(sw, "_existing_captures", lambda: [])
     monkeypatch.setattr(sw.RouteStore, "_find_qlog", staticmethod(lambda p: p + "/qlog.zst"))
 
 
@@ -67,8 +68,8 @@ def test_route_without_real_epoch_is_skipped(store, quiet_world, monkeypatch):
 def test_existing_capture_marks_done_without_job(store, quiet_world, monkeypatch):
     store.add_route("cccc--33")
     monkeypatch.setattr(sw, "_extract_bookmark_epochs", lambda path, seg: [(10_000, None)])
-    monkeypatch.setattr(sw, "_existing_capture_epochs",
-                        lambda: [REAL_EPOCH + 10.8])  # within 2s tolerance
+    monkeypatch.setattr(sw, "_existing_captures",
+                        lambda: [(REAL_EPOCH + 10.8, "capture_legacy.png")])  # within 2s
 
     jobs, changed = sw._collect_pending(store)
 
@@ -76,6 +77,8 @@ def test_existing_capture_marks_done_without_job(store, quiet_world, monkeypatch
     assert changed
     state = store._metadata["cccc--33"]["hud_capture_state"]
     assert state["bookmarks"]["10000"]["status"] == "done"
+    # The file that actually exists is recorded — not the computed name
+    assert state["bookmarks"]["10000"]["file"] == "capture_legacy.png"
 
 
 def test_scanned_segments_are_not_rescanned(store, quiet_world, monkeypatch):
@@ -117,6 +120,19 @@ def test_onroad_aborts_scan(store, quiet_world, monkeypatch):
 
     assert jobs == []
     assert not changed
+
+
+def test_unenriched_route_waits_for_longitude(store, quiet_world, monkeypatch):
+    """No start_lng → no timezone → the name would collide with the old
+    plugin's UTC live-capture names. Skip until enrichment fills it."""
+    store.add_route("gggg--00", lng=None)
+    monkeypatch.setattr(sw, "_extract_bookmark_epochs",
+                        lambda path, seg: pytest.fail("must not scan before enrichment"))
+
+    jobs, changed = sw._collect_pending(store)
+
+    assert jobs == []
+    assert "hud_capture_state" not in store._metadata["gggg--00"]
 
 
 def test_exact_tap_epoch_preferred_over_create_time(store, quiet_world, monkeypatch):

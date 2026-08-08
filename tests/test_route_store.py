@@ -990,3 +990,37 @@ class TestHybridGpsTime:
         assert store._metadata[lid]["gps_time"] == 1_000_000.0
         assert store._metadata[lid]["drive_stats"]["engaged_m"] == 4_000  # preserved
         assert store._stats["all"]["total_m_with_engagement"] == 5_000
+
+
+class TestPreserveUserFields:
+    """User- and worker-owned metadata must survive every enrichment rebuild.
+
+    ensure_enriched / enrich_new_routes replace the whole metadata entry from
+    a fresh log parse; anything not derivable from logs has to be carried
+    over. Losing hud_capture_state made the screenshot worker re-scan and
+    re-extract an already-processed route (observed on route 000003ee).
+    """
+
+    def test_carries_over_all_owned_fields(self, tmp_path):
+        store = RouteStore(str(tmp_path))
+        existing = {
+            "route_id": "x",
+            "drive_stats": {"distance_m": 1},
+            "notes": "check the overpass clip",
+            "bookmarks": [{"time_sec": 5.0, "label": "Drive bookmark"}],
+            "drive_bookmarks_imported": True,
+            "hud_capture_state": {"scanned_segs": [0],
+                                  "bookmarks": {"5000": {"status": "done"}}},
+            "gps_time": 123.0,  # derivable — must NOT be carried over
+        }
+        entry = {"route_id": "x"}
+        store._preserve_user_fields(existing, entry)
+        for key in RouteStore._PRESERVED_META_FIELDS:
+            assert entry[key] == existing[key], key
+        assert "gps_time" not in entry
+
+    def test_fresh_parse_values_are_not_overwritten(self, tmp_path):
+        store = RouteStore(str(tmp_path))
+        entry = {"route_id": "x", "drive_stats": {"distance_m": 2}}
+        store._preserve_user_fields({"drive_stats": {"distance_m": 1}}, entry)
+        assert entry["drive_stats"] == {"distance_m": 2}

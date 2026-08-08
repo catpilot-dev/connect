@@ -591,6 +591,19 @@ class RouteStore:
 
         return result if result else None
 
+    # Fields owned by the user or background workers — never derivable from
+    # logs, so every enrichment path must carry them over when it rebuilds a
+    # route's metadata entry. Losing hud_capture_state makes the screenshot
+    # worker re-scan and re-extract; losing notes/bookmarks loses user data.
+    _PRESERVED_META_FIELDS = ("drive_stats", "notes", "bookmarks",
+                              "drive_bookmarks_imported", "hud_capture_state")
+
+    def _preserve_user_fields(self, existing: dict, entry: dict) -> dict:
+        for key in self._PRESERVED_META_FIELDS:
+            if existing.get(key) is not None and key not in entry:
+                entry[key] = existing[key]
+        return entry
+
     def _log_to_metadata_entry(self, local_id: str, log_meta: dict) -> dict:
         """Convert log parse result to metadata entry."""
         entry = {"route_id": local_id}
@@ -801,6 +814,7 @@ class RouteStore:
 
         entry = self._log_to_metadata_entry(local_id, result)
         entry["enriched"] = False
+        self._preserve_user_fields(self._metadata.get(local_id, {}), entry)
         self._metadata[local_id] = entry
 
         # Reverse-geocode start address
@@ -895,8 +909,7 @@ class RouteStore:
                 existing = self._metadata.get(local_id, {})
                 entry = self._log_to_metadata_entry(local_id, result)
                 entry["enriched"] = False  # Full enrichment deferred to Enrich button
-                if existing.get("drive_stats"):
-                    entry["drive_stats"] = existing["drive_stats"]
+                self._preserve_user_fields(existing, entry)
                 if not result.get("gps_time"):
                     entry["gps_enrich_attempted"] = True
                 self._metadata[local_id] = entry
@@ -1202,8 +1215,7 @@ class RouteStore:
         if log_meta:
             existing = self._metadata.get(local_id, {})
             entry = self._log_to_metadata_entry(local_id, log_meta)
-            if existing.get("drive_stats"):
-                entry["drive_stats"] = existing["drive_stats"]
+            self._preserve_user_fields(existing, entry)
             self._metadata[local_id] = entry
             self._rebuild_routes()
             self._save_metadata()

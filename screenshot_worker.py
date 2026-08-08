@@ -95,19 +95,24 @@ def _user_render_busy() -> bool:
                for t in _hud_prerender_tasks.values())
 
 
-def _existing_capture_epochs() -> list[float]:
-    epochs = []
+def _existing_captures() -> list[tuple[float, str]]:
+    """(epoch, filename) for every capture already on disk."""
+    out = []
     if os.path.isdir(SCREENSHOTS_DIR):
         for name in os.listdir(SCREENSHOTS_DIR):
             if name.lower().endswith(".png"):
                 e = _parse_capture_epoch(name)
                 if e is not None:
-                    epochs.append(e)
-    return epochs
+                    out.append((e, name))
+    return out
 
 
-def _has_capture(epochs: list[float], target: float) -> bool:
-    return any(abs(e - target) <= MATCH_TOLERANCE for e in epochs)
+def _find_capture(captures: list[tuple[float, str]], target: float) -> str | None:
+    """Filename of an existing capture within the match window, or None."""
+    for epoch, name in captures:
+        if abs(epoch - target) <= MATCH_TOLERANCE:
+            return name
+    return None
 
 
 def _sync_epochs_to_meta(meta: dict, bms: dict) -> bool:
@@ -145,7 +150,7 @@ def _collect_pending(store) -> tuple[list[dict], bool]:
     jobs = []
     changed = False
     scan_budget = SCAN_BUDGET
-    capture_epochs = _existing_capture_epochs()
+    captures = _existing_captures()
 
     routes = sorted(store._routes.values(),
                     key=lambda r: r.get("create_time", 0), reverse=True)
@@ -157,7 +162,11 @@ def _collect_pending(store) -> tuple[list[dict], bool]:
         if not lid or lid in store._hidden:
             continue
         create_time = route.get("create_time") or 0
-        if create_time < MIN_REAL_EPOCH:
+        # Wait for enrichment: without create_time the epoch is meaningless,
+        # and without start_lng the PNG would be named in device time (UTC) —
+        # which collides, to the second, with the old plugin's live-capture
+        # names. Both fields appear together on the first route-list view.
+        if create_time < MIN_REAL_EPOCH or route.get("start_lng") is None:
             continue
         meta = store._metadata.get(lid)
         if meta is None:
@@ -203,15 +212,15 @@ def _collect_pending(store) -> tuple[list[dict], bool]:
             if entry.get("status") != "pending":
                 continue
             epoch = entry.get("epoch") or (create_time + int(ms_key) / 1000.0)
-            lng = route.get("start_lng")
-            tz_off = round(lng / 15) if lng is not None else None
-            filename = _capture_filename(epoch, tz_off)
-            # Already captured: exact filename from a previous run, or a
-            # legacy live capture within the match window.
-            if os.path.isfile(os.path.join(SCREENSHOTS_DIR, filename)) \
-                    or _has_capture(capture_epochs, epoch):
+            filename = _capture_filename(epoch, round(route["start_lng"] / 15))
+            # Already captured: exact filename from a previous run, or another
+            # capture within the match window. Record the file that actually
+            # exists — never the computed name it might have had.
+            existing = filename if os.path.isfile(os.path.join(SCREENSHOTS_DIR, filename)) \
+                else _find_capture(captures, epoch)
+            if existing:
                 entry["status"] = "done"
-                entry["file"] = filename
+                entry["file"] = existing
                 changed = True
                 continue
             if entry.get("attempts", 0) >= MAX_ATTEMPTS:
