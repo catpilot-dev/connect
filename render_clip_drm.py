@@ -136,10 +136,10 @@ def find_max_segment(data_dir: str, local_id: str) -> int:
     return max_seg
 
 
-def find_rlog(data_dir: str, local_id: str) -> str | None:
-    """Find rlog in segment 0."""
+def find_log(data_dir: str, local_id: str) -> str | None:
+    """Find best log file in segment 0: qlog first, rlog fallback."""
     seg0 = os.path.join(data_dir, f"{local_id}--0")
-    for fname in ["rlog.zst", "rlog"]:
+    for fname in ["qlog.zst", "qlog", "rlog.zst", "rlog"]:
         path = os.path.join(seg0, fname)
         if os.path.exists(path):
             return path
@@ -250,9 +250,9 @@ def main():
         write_status(args.status_file, {"status": "error", "error": "No segments found"})
         sys.exit(1)
 
-    rlog_path = find_rlog(args.data_dir, args.local_id)
-    if not rlog_path:
-        write_status(args.status_file, {"status": "error", "error": "No rlog found in segment 0"})
+    log_path = find_log(args.data_dir, args.local_id)
+    if not log_path:
+        write_status(args.status_file, {"status": "error", "error": "No log found in segment 0"})
         sys.exit(1)
 
     symlink_dir = create_symlink_dir(args.data_dir, args.local_id, args.dongle_id, max_seg + 1)
@@ -274,8 +274,8 @@ def main():
             # C++ msgq uses /dev/shm/msgq_{prefix}/ path format
             os.makedirs(f"/dev/shm/msgq_{prefix}", exist_ok=True)
 
-            # Populate CarParams from rlog
-            lr = LogReader(rlog_path)
+            # Populate CarParams from log
+            lr = LogReader(log_path)
             populate_car_params(lr)
 
             # Prevent "System Unresponsive" — at 0.2x replay, selfdriveState gaps

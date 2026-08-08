@@ -273,7 +273,7 @@ def _lookup_gps(coords: list, t: float) -> dict:
 
 
 def _load_calibration(seg_dir: Path) -> dict | None:
-    """Load cached calibration.json, or extract from rlog and cache it."""
+    """Load cached calibration.json, or extract from qlog/rlog and cache it."""
     calib_file = seg_dir / "calibration.json"
     if calib_file.exists():
         try:
@@ -281,11 +281,14 @@ def _load_calibration(seg_dir: Path) -> dict | None:
         except Exception:
             pass
 
-    # Extract from rlog
-    rlog = seg_dir / "rlog.zst"
-    if not rlog.exists():
-        rlog = seg_dir / "rlog"
-    if not rlog.exists():
+    # Extract from qlog (preferred, tiny) or rlog (fallback)
+    log_file = None
+    for name in ("qlog.zst", "qlog", "rlog.zst", "rlog"):
+        candidate = seg_dir / name
+        if candidate.exists():
+            log_file = candidate
+            break
+    if not log_file:
         return None
 
     try:
@@ -296,7 +299,7 @@ def _load_calibration(seg_dir: Path) -> dict | None:
         from tools.lib.logreader import LogReader
 
         calib = None
-        for msg in LogReader(str(rlog)):
+        for msg in LogReader(str(log_file)):
             if msg.which() == "liveCalibration":
                 c = msg.liveCalibration
                 rpy = list(c.rpyCalib)
