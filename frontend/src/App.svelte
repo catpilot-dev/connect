@@ -12,7 +12,6 @@
   import SignalBrowserPage from './lib/pages/SignalBrowserPage.svelte'
   import PluginsPage from './lib/pages/PluginsPage.svelte'
   import ScreenshotsPage from './lib/pages/ScreenshotsPage.svelte'
-  import HomePage from './lib/pages/HomePage.svelte'
 
   let error = $state(null)
   let isOnroad = $state(false)
@@ -24,13 +23,12 @@
     if (parts[0] === 'settings') return 'settings'
     if (parts[0] === 'plugins') return 'plugins'
     if (parts[0] === 'screenshots') return 'screenshots'
-    if (parts[0] === 'home') return 'home'
     if (parts[0] === 'routes') return 'routes'
     // if (parts[0] === 'dashboard') return 'dashboard'  // disabled for now
     if (parts[0] === 'signals') return 'signals'
-    // Unknown first segment with a second part = route detail (e.g. /{dongleId}/{localId})
-    if (parts.length >= 2) return 'routes'
-    return 'home'
+    // Route detail (/{dongleId}/{localId}) and anything unrecognised — including
+    // the old /home — all land on the route list.
+    return 'routes'
   }
 
   let page = $state(parsePage())
@@ -107,23 +105,15 @@
     }
   }
 
+  // isOnroad gates the Update, Reboot and Software controls, so it must not go
+  // stale while the page sits open — a session that starts parked and then
+  // drives off would otherwise keep offering them. Polled rather than streamed:
+  // /ws/home is gone, and this only needs to be right to within a few seconds.
   function startOnroadWatcher() {
-    const proto = location.protocol === 'https:' ? 'wss' : 'ws'
-    let ws
-    function connect() {
-      ws = new WebSocket(`${proto}://${location.host}/ws/home`)
-      ws.onmessage = (e) => {
-        try {
-          const msg = JSON.parse(e.data)
-          if (msg.type === 'device' && 'isOnroad' in msg) {
-            isOnroad = msg.isOnroad
-          }
-        } catch {}
-      }
-      ws.onclose = () => setTimeout(connect, 3000)
-    }
-    connect()
-    return () => ws?.close()
+    const timer = setInterval(async () => {
+      try { isOnroad = await fetchIsOnroad() } catch {}
+    }, 30000)
+    return () => clearInterval(timer)
   }
 
   onMount(async () => {
@@ -180,14 +170,7 @@
     return () => { unsub(); if (stopWakeLock) stopWakeLock(); if (stopGps) stopGps(); stopOnroadWatcher() }
   })
 
-  function showHome() {
-    page = 'home'
-    selectedRoute.set(null)
-    history.pushState(null, '', '/home')
-  }
-
   function showRoutes() {
-    if (isOnroad) return
     page = 'routes'
     selectedRoute.set(null)
     history.pushState(null, '', '/routes')
@@ -227,9 +210,7 @@
   }
 </script>
 
-{#if page === 'home'}
-  <HomePage />
-{:else if page === 'signals'}
+{#if page === 'signals'}
   <SignalBrowserPage />
 {:else if page === 'tiles'}
   <TileManager />
@@ -242,12 +223,6 @@
     <DeviceHeader>
       {#snippet nav()}
         <div class="flex items-center gap-1">
-          <button
-            class="px-3 py-1.5 text-sm rounded transition-colors {page === 'home' ? 'bg-surface-700 text-surface-50' : 'text-surface-400 hover:text-surface-200'}"
-            onclick={showHome}
-          >
-            Home
-          </button>
           <button
             class="px-3 py-1.5 text-sm rounded transition-colors {page === 'routes' && !$selectedRoute ? 'bg-surface-700 text-surface-50' : 'text-surface-400 hover:text-surface-200'}"
             onclick={showRoutes}

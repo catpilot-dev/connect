@@ -118,7 +118,6 @@ from handlers import (
     handle_ssh_keys_set,
     handle_ssh_keys_delete,
     handle_hud_data,
-    handle_home_ws,
 )
 from route_store import DEFAULT_DATA_DIR, DEFAULT_PORT, RouteStore
 from storage_management import run_cleanup
@@ -335,9 +334,6 @@ def create_app(data_dir: str, static_dir: str) -> web.Application:
     # Dashboard telemetry (replay REST + live WebSocket)
     app.router.add_get("/v1/dashboard/telemetry/{routeName}/{segments}", handle_dashboard_telemetry)
     app.router.add_get("/ws/dashboard", handle_dashboard_ws)
-
-    # Home page (offroad device status WebSocket)
-    app.router.add_get("/ws/home", handle_home_ws)
 
     # Signal browser (catalog + data extraction)
     app.router.add_get("/v1/route/{routeName}/signals/catalog", handle_signal_catalog)

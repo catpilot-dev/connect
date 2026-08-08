@@ -115,10 +115,6 @@ from .hud_data import (
     handle_hud_data,
 )
 
-from .home import (
-    handle_home_ws,
-)
-
 from .signals import (
     handle_signal_catalog,
     handle_signal_data,
