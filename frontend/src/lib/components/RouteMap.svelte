@@ -11,8 +11,8 @@
    * - Configurable tile source (AMap for China, CartoDB for overseas)
    */
 
-  /** @type {{ coords: Array, events?: Array, currentTime?: number, durationMs?: number, selectionStart?: number, selectionEnd?: number, visible?: boolean, startLat?: number, startLng?: number }} */
-  let { coords = [], events = [], currentTime = 0, durationMs = 0, selectionStart = 0, selectionEnd = 0, visible = true, startLat = null, startLng = null } = $props()
+  /** @type {{ coords: Array, events?: Array, currentTime?: number, durationMs?: number, selectionStart?: number, selectionEnd?: number, visible?: boolean, startLat?: number, startLng?: number, onSeek?: Function }} */
+  let { coords = [], events = [], currentTime = 0, durationMs = 0, selectionStart = 0, selectionEnd = 0, visible = true, startLat = null, startLng = null, onSeek = null } = $props()
 
   let mapContainer = $state(null)
   let map = null
@@ -26,6 +26,38 @@
   /** Convert coord to map projection — GCJ-02 for AMap, passthrough for WGS-84 tiles */
   function toMapCoord(lat, lng) {
     return tileConfig.gcj02 ? wgs84ToGcj02(lat, lng) : [lat, lng]
+  }
+
+  // Track points in the projection the map actually renders. Coords are WGS-84
+  // but AMap renders GCJ-02, so searching against raw coords would be off by
+  // the datum shift (~100m in China).
+  const projected = $derived(coords.map(c => toMapCoord(c.lat, c.lng)))
+
+  /** Seek to the track point nearest a click; ignore clicks well off-track. */
+  function seekToNearest(latlng, containerPoint) {
+    if (!onSeek || projected.length === 0) return
+
+    // Longitude degrees shrink with latitude — scale so "nearest" is not
+    // biased east-west at non-equatorial latitudes.
+    const kLng = Math.cos((latlng.lat * Math.PI) / 180)
+    let best = -1
+    let bestD = Infinity
+    for (let i = 0; i < projected.length; i++) {
+      const dLat = projected[i][0] - latlng.lat
+      const dLng = (projected[i][1] - latlng.lng) * kLng
+      const d = dLat * dLat + dLng * dLng
+      if (d < bestD) {
+        bestD = d
+        best = i
+      }
+    }
+    if (best < 0) return
+
+    // Clicking empty map should not teleport the playhead.
+    const pt = map.latLngToContainerPoint(projected[best])
+    if (pt.distanceTo(containerPoint) > 30) return
+
+    onSeek(coords[best].t)
   }
 
   onMount(async () => {
@@ -63,6 +95,9 @@
       weight: 2,
       pane: 'markerPane',  // ensure it renders above polylines
     }).addTo(map)
+
+    // Click the track to jump there.
+    map.on('click', (e) => seekToNearest(e.latlng, e.containerPoint))
 
     drawPath()
 

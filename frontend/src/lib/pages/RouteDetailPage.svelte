@@ -960,6 +960,7 @@
               visible={activeTab === 'map'}
               startLat={route.start_lat}
               startLng={route.start_lng}
+              onSeek={handleSeek}
             />
           </Tabs.Content>
 
