@@ -7,8 +7,8 @@
 
   let routes = $state([])
   let loading = $state(true)
-  let loadingMore = $state(false)
-  let hasMore = $state(false)
+  let page = $state(0)
+  let hasNext = $state(false)
   let storage = $state(null)
   let health = $state(null)
   let error = $state(null)
@@ -16,7 +16,7 @@
   let dateFrom = $state('')
   let dateTo = $state('')
 
-  const PAGE_SIZE = 5
+  const PAGE_SIZE = 20
   const TABS = [
     { id: 'recent', label: 'Recent' },
     { id: 'saved', label: 'Saved' },
@@ -76,7 +76,9 @@
     loading = true
     error = null
     try {
-      const opts = { limit: PAGE_SIZE, filter: activeTab }
+      // Over-fetch by one row so we can tell whether a next page exists
+      // without a second request or a response-shape change.
+      const opts = { limit: PAGE_SIZE + 1, offset: page * PAGE_SIZE, filter: activeTab }
       const afterGps = dateToEpoch(dateFrom)
       const beforeGps = dateToEpoch(dateTo, true)
       if (afterGps) opts.afterGps = afterGps
@@ -87,14 +89,14 @@
         fetchStorage(),
         fetchHealth(),
       ])
-      routes = data
+      hasNext = data.length > PAGE_SIZE
+      routes = data.slice(0, PAGE_SIZE)
       storage = st
       health = hl
       storageInfo.set(st)
-      hasMore = activeTab === 'all' && data.length >= PAGE_SIZE
       loading = false
       if (activeTab === 'recent' || activeTab === 'all') {
-        scanPendingRoutes(data)
+        scanPendingRoutes(routes)
       }
     } catch (e) {
       error = e.message
@@ -102,30 +104,11 @@
     }
   }
 
-  async function loadMore() {
-    if (loadingMore || !hasMore || routes.length === 0 || activeTab !== 'all') return
-    loadingMore = true
-    try {
-      const lastRoute = routes[routes.length - 1]
-      const opts = {
-        limit: PAGE_SIZE,
-        filter: 'all',
-        beforeCounter: lastRoute.route_counter,
-      }
-      const afterGps = dateToEpoch(dateFrom)
-      const beforeGps = dateToEpoch(dateTo, true)
-      if (afterGps) opts.afterGps = afterGps
-      if (beforeGps) opts.beforeGps = beforeGps
-
-      const data = await fetchRoutes($dongleId, opts)
-      routes = [...routes, ...data]
-      hasMore = data.length >= PAGE_SIZE
-      loadingMore = false
-      scanPendingRoutes(data)
-    } catch (e) {
-      console.error('loadMore error:', e)
-      loadingMore = false
-    }
+  function goToPage(next) {
+    if (!$dongleId) return
+    page = next
+    window.scrollTo({ top: 0 })
+    loadRoutes($dongleId)
   }
 
   function switchTab(tabId) {
@@ -133,17 +116,20 @@
     activeTab = tabId
     loading = true
     routes = []
-    hasMore = false
+    page = 0
+    hasNext = false
     applyTabDefaults(tabId)
     if ($dongleId) loadRoutes($dongleId)
   }
 
   function resetDates() {
+    page = 0
     applyTabDefaults(activeTab)
     if ($dongleId) loadRoutes($dongleId)
   }
 
   function onDateChange() {
+    page = 0
     if ($dongleId) loadRoutes($dongleId)
   }
 
@@ -312,15 +298,23 @@
       <RouteCard {route} />
     {/each}
 
-    <!-- Load more (All tab only) -->
-    {#if hasMore}
-      <div class="flex justify-center py-4">
+    <!-- Previous / Next pager -->
+    {#if page > 0 || hasNext}
+      <div class="flex items-center justify-center gap-3 py-4">
         <button
           class="btn-ghost"
-          onclick={loadMore}
-          disabled={loadingMore}
+          onclick={() => goToPage(page - 1)}
+          disabled={page === 0}
         >
-          {loadingMore ? 'Loading...' : 'Load more'}
+          ‹ Previous
+        </button>
+        <span class="text-sm text-surface-500 tabular-nums">Page {page + 1}</span>
+        <button
+          class="btn-ghost"
+          onclick={() => goToPage(page + 1)}
+          disabled={!hasNext}
+        >
+          Next ›
         </button>
       </div>
     {/if}

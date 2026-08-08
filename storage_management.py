@@ -77,9 +77,12 @@ def _free_bytes(store) -> int:
 def run_cleanup(store) -> dict:
     """Single cleanup pass — COD wrapper around stock deleter logic.
 
-    Phase 0: Expired recycled routes (>7 days) — always, regardless of storage.
-    Phase 1: Normal routes (not saved, not xattr-preserved) — when free < 20GB.
-    Phase 2: COD-saved routes — emergency only, when free < 10GB after phase 1.
+    Phase 0:  Expired recycled routes (>7 days) — always, regardless of storage.
+    Phase 0b: Aged-out invalid stubs (>7 days) — always, regardless of storage.
+    Phase 1a: Remaining recycle-bin routes (deleted + invalid) — when free < 20GB,
+              reclaimed BEFORE any still-valid route since they're already discarded.
+    Phase 1:  Normal routes (not saved, not xattr-preserved) — when free < 20GB.
+    Phase 2:  COD-saved routes — emergency only, when free < 10GB after phase 1.
 
     xattr-preserved routes (comma cloud) are never deleted by COD.
 
@@ -98,6 +101,55 @@ def run_cleanup(store) -> dict:
         _delete_route_from_disk(store, lid)
         deleted.append({"route": lid, "reason": "recycled_expired", "age_days": round(age_days, 1)})
         logger.info("Cleanup: purged expired recycled route %s (%.1f days old)", lid, age_days)
+
+    # ── Phase 0b: Aged-out invalid stubs (always) ───────────────────────
+    # Single-segment boot/aborted stubs (maxqlog 0, no distance) never enter
+    # _hidden, so Phase 0 never sees them and they linger in the recycled bin
+    # until storage runs low. Purge those older than the recycle TTL, aged by
+    # segment mtime (unenriched stubs have no reliable create_time).
+    for lid, info in list(store._raw.items()):
+        if lid in store._hidden or lid in store._preserved:
+            continue
+        segs = info["segments"]
+        if max((s["number"] for s in segs), default=0) >= 1:
+            continue  # multi-segment — not a stub
+        if store._calc_route_distance(lid, segs):
+            continue  # has distance — a real (short) drive, keep
+        try:
+            mtime = max(Path(s["path"]).stat().st_mtime for s in segs)
+        except (OSError, ValueError):
+            continue
+        age_days = (now - mtime) / 86400
+        if now - mtime <= RECYCLE_TTL:
+            continue  # keep recent stubs briefly (may be mid-recording)
+        _delete_route_from_disk(store, lid)
+        deleted.append({"route": lid, "reason": "stub_expired", "age_days": round(age_days, 1)})
+        logger.info("Cleanup: purged aged stub route %s (%.1f days old)", lid, age_days)
+
+    # ── Phase 1a: Reclaim the recycle bin first when free < 20GB ────────
+    # Routes already in the recycle bin (user-deleted + invalid) should be
+    # reclaimed before any still-valid route, even inside their 7-day grace.
+    # Order: deleted routes first (oldest-deleted first), then invalid stubs;
+    # xattr-preserved (comma cloud) routes are still never touched.
+    free = _free_bytes(store)
+    if free < MIN_FREE_BYTES:
+        def _recycle_key(r):
+            deleted_first = 0 if r.get("recycled_reason") == "deleted" else 1
+            age = r.get("hidden_at") or _route_counter(r.get("_local_id", ""))
+            return (deleted_first, age)
+
+        for r in sorted(store.get_recycled_routes(), key=_recycle_key):
+            lid = r["_local_id"]
+            if lid in store._preserved or has_xattr_preserve(store, lid):
+                continue
+            _delete_route_from_disk(store, lid)
+            deleted.append({"route": lid, "reason": "recycled_low_storage",
+                            "recycled_reason": r.get("recycled_reason")})
+            logger.info("Cleanup: purged recycled route %s (%s, low storage)",
+                        lid, r.get("recycled_reason"))
+            free = _free_bytes(store)
+            if free >= MIN_FREE_BYTES:
+                break
 
     # ── Phase 1: Normal routes when free < 20GB ─────────────────────────
     free = _free_bytes(store)

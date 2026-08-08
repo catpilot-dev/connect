@@ -131,6 +131,130 @@ class TestPhase0ExpiredRecycled:
         assert len(store._hidden) == 0
 
 
+# ─── Phase 0b: Aged invalid stubs ────────────────────────────────────
+
+class TestPhase0bStubPurge:
+    def test_aged_stub_purged(self, tmp_path):
+        """Single-segment stubs (no distance) older than the TTL are purged
+        even with plenty of free space."""
+        _make_route(tmp_path, "00000001--stub111", num_segments=1)
+        store = _make_store(tmp_path, ["00000001--stub111"])
+        old = time.time() - 8 * 86400
+        os.utime(tmp_path / "00000001--stub111--0", (old, old))
+
+        with _fake_free(50 * 1024**3):
+            result = run_cleanup(store)
+
+        assert any(d["reason"] == "stub_expired" for d in result["deleted"])
+        assert not (tmp_path / "00000001--stub111--0").exists()
+        assert "00000001--stub111" not in store._raw
+
+    def test_recent_stub_kept(self, tmp_path):
+        """Stubs newer than the TTL are kept (may be mid-recording)."""
+        _make_route(tmp_path, "00000001--stub111", num_segments=1)
+        store = _make_store(tmp_path, ["00000001--stub111"])  # fresh mtime
+
+        with _fake_free(50 * 1024**3):
+            result = run_cleanup(store)
+
+        assert not any(d["reason"] == "stub_expired" for d in result["deleted"])
+        assert (tmp_path / "00000001--stub111--0").exists()
+
+    def test_aged_multiseg_not_purged_as_stub(self, tmp_path):
+        """Multi-segment routes are never treated as stubs, even if old and
+        distance-less (they're pending, not invalid)."""
+        _make_route(tmp_path, "00000001--multi11", num_segments=3)
+        store = _make_store(tmp_path, ["00000001--multi11"])
+        old = time.time() - 30 * 86400
+        for i in range(3):
+            os.utime(tmp_path / f"00000001--multi11--{i}", (old, old))
+
+        with _fake_free(50 * 1024**3):
+            result = run_cleanup(store)
+
+        assert not any(d["reason"] == "stub_expired" for d in result["deleted"])
+        assert (tmp_path / "00000001--multi11--0").exists()
+
+    def test_preserved_stub_kept(self, tmp_path):
+        """A preserved single-segment route is never stub-purged."""
+        _make_route(tmp_path, "00000001--stub111", num_segments=1)
+        store = _make_store(tmp_path, ["00000001--stub111"],
+                            preserved=["00000001--stub111"])
+        old = time.time() - 30 * 86400
+        os.utime(tmp_path / "00000001--stub111--0", (old, old))
+
+        with _fake_free(50 * 1024**3):
+            result = run_cleanup(store)
+
+        assert not any(d["reason"] == "stub_expired" for d in result["deleted"])
+        assert (tmp_path / "00000001--stub111--0").exists()
+
+
+# ─── Phase 1a: Recycle bin reclaimed first under low storage ──────────
+
+class TestPhase1aRecycleBinFirst:
+    def test_recycled_reclaimed_before_valid_spares_valid(self, tmp_path):
+        """Under low storage, a still-recycled (deleted <7d) route is purged
+        before any valid route — and if that frees enough space, valid routes
+        are spared entirely."""
+        _make_route(tmp_path, "00000001--valid01", num_segments=2)
+        _make_route(tmp_path, "00000002--valid02", num_segments=2)
+        _make_route(tmp_path, "00000005--del0055", num_segments=2)
+        two_days_ago = time.time() - 2 * 86400
+        store = _make_store(
+            tmp_path,
+            ["00000001--valid01", "00000002--valid02", "00000005--del0055"],
+            hidden={"00000005--del0055": two_days_ago},  # <7d: Phase 0 won't touch it
+        )
+
+        # Low while the deleted route is on disk; recovers once it's gone.
+        def usage(_path):
+            gone = not (tmp_path / "00000005--del0055--0").exists()
+            free = 50 * 1024**3 if gone else 5 * 1024**3
+            return type("U", (), {"total": 64 * 1024**3, "used": 0, "free": free})()
+
+        with patch("storage_management.shutil.disk_usage", side_effect=usage):
+            result = run_cleanup(store)
+
+        reasons = {d["route"]: d["reason"] for d in result["deleted"]}
+        assert reasons.get("00000005--del0055") == "recycled_low_storage"
+        assert not (tmp_path / "00000005--del0055--0").exists()
+        # Valid routes spared — space recovered by reclaiming the recycle bin
+        assert (tmp_path / "00000001--valid01--0").exists()
+        assert (tmp_path / "00000002--valid02--0").exists()
+        assert "00000001--valid01" not in reasons
+
+    def test_recycled_ordered_before_valid_when_all_low(self, tmp_path):
+        """If storage stays low, recycled routes are still deleted first."""
+        _make_route(tmp_path, "00000001--valid01", num_segments=2)
+        _make_route(tmp_path, "00000005--del0055", num_segments=2)
+        two_days_ago = time.time() - 2 * 86400
+        store = _make_store(tmp_path, ["00000001--valid01", "00000005--del0055"],
+                            hidden={"00000005--del0055": two_days_ago})
+
+        with _fake_free(5 * 1024**3):  # stays low → everything deleted
+            result = run_cleanup(store)
+
+        order = [d["route"] for d in result["deleted"]]
+        assert order.index("00000005--del0055") < order.index("00000001--valid01")
+        assert result["deleted"][0]["reason"] == "recycled_low_storage"
+
+    def test_xattr_preserved_recycled_route_never_purged(self, tmp_path):
+        """A comma-cloud (xattr-preserved) route is never deleted, even from the
+        recycle bin under low storage."""
+        _make_route(tmp_path, "00000005--del0055", num_segments=2)
+        two_days_ago = time.time() - 2 * 86400
+        store = _make_store(tmp_path, ["00000005--del0055"],
+                            hidden={"00000005--del0055": two_days_ago})
+
+        with _fake_free(5 * 1024**3), \
+             patch("storage_management.has_xattr_preserve", return_value=True):
+            result = run_cleanup(store)
+
+        assert not any(d["reason"] == "recycled_low_storage" for d in result["deleted"])
+        assert (tmp_path / "00000005--del0055--0").exists()
+
+
 # ─── Phase 1: Low storage cleanup ────────────────────────────────────
 
 class TestPhase1LowStorage:
@@ -189,29 +313,28 @@ class TestPhase1LowStorage:
         assert "00000002--saved000" not in deleted_routes
         assert "00000002--saved000" in store._preserved
 
-    def test_skips_hidden_routes(self, tmp_path):
-        """Phase 1 should skip hidden routes (handled by phase 0)."""
+    def test_reclaims_hidden_routes_first(self, tmp_path):
+        """Under low storage, hidden (recycled) routes are reclaimed via the
+        recycle-bin phase — before any valid route — even inside their 7-day
+        grace. (Reverses the old 'Phase 1 skips hidden' contract.)"""
         _make_route(tmp_path, "00000001--normal00")
         _make_route(tmp_path, "00000002--hidden00")
 
-        recent = time.time() - 86400  # 1 day ago, not expired
+        recent = time.time() - 86400  # 1 day ago, not TTL-expired
         store = _make_store(tmp_path,
                             ["00000001--normal00", "00000002--hidden00"],
                             hidden={"00000002--hidden00": recent})
 
-        call_count = {"n": 0}
-        def fake_usage(path):
-            call_count["n"] += 1
-            if call_count["n"] <= 2:
-                return type("U", (), {"total": 64 * 1024**3, "used": 57 * 1024**3, "free": 7 * 1024**3})()
-            return type("U", (), {"total": 64 * 1024**3, "used": 53 * 1024**3, "free": 11 * 1024**3})()
-
-        with patch("storage_management.shutil.disk_usage", side_effect=fake_usage):
+        with _fake_free(7 * 1024**3):  # stays low → both eventually deleted
             result = run_cleanup(store)
 
-        deleted_routes = [d["route"] for d in result["deleted"]]
-        assert "00000002--hidden00" not in deleted_routes
-        assert "00000002--hidden00" in store._hidden
+        by_route = {d["route"]: d["reason"] for d in result["deleted"]}
+        # Hidden route reclaimed via the recycle-bin phase, not the normal phase
+        assert by_route.get("00000002--hidden00") == "recycled_low_storage"
+        assert "00000002--hidden00" not in store._hidden
+        # ...and reclaimed BEFORE the valid route
+        order = [d["route"] for d in result["deleted"]]
+        assert order.index("00000002--hidden00") < order.index("00000001--normal00")
 
     def test_no_cleanup_when_plenty_of_space(self, tmp_path):
         """When free >= 10GB, phase 1 should not delete anything."""

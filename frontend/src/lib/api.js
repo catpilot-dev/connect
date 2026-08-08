@@ -32,8 +32,9 @@ export async function fetchHealth() {
 
 // ── Routes ──────────────────────────────────────────────────
 
-export async function fetchRoutes(dongleId, { limit = 5, beforeCounter, filter, afterGps, beforeGps } = {}) {
+export async function fetchRoutes(dongleId, { limit = 5, offset, beforeCounter, filter, afterGps, beforeGps } = {}) {
   let url = `/v1/devices/${dongleId}/routes?limit=${limit}`
+  if (offset != null) url += `&offset=${offset}`
   if (beforeCounter != null) url += `&before_counter=${beforeCounter}`
   if (filter) url += `&filter=${filter}`
   if (afterGps != null) url += `&after_gps=${afterGps}`

@@ -262,6 +262,47 @@ class TestBuildRoute:
             assert r["_local_id"] != "00000001--stub"
 
 
+class TestRecycledClassification:
+    def _build_store(self, tmp_path):
+        with patch.object(RouteStore, "_detect_dongle_id"), \
+             patch.object(RouteStore, "_detect_agnos_version"):
+            store = RouteStore(str(tmp_path))
+            store._dongle_id = "test123"
+            store.scan(force=True)
+        return store
+
+    def test_unenriched_multiseg_is_pending_not_recycled(self, tmp_path):
+        """An unenriched multi-segment route is pending (awaiting scan), NOT
+        invalid. It must appear as pending and must NOT show up in the recycled
+        bin — otherwise the same route shows as a 'Scanning…' card in Recent and
+        an 'Invalid' card in Recycled at the same time (regression: wall_time_nanos
+        only exists post-enrichment, so the recycled check flagged every
+        not-yet-scanned route as invalid)."""
+        for seg in ("00000005--fresh--0", "00000005--fresh--1"):
+            d = tmp_path / seg
+            d.mkdir()
+            (d / "rlog.zst").write_bytes(b"")
+            (d / "qcamera.ts").write_bytes(b"")
+        store = self._build_store(tmp_path)
+
+        pending_ids = {p["local_id"] for p in store.get_pending_route_ids()}
+        recycled_ids = {r["_local_id"] for r in store.get_recycled_routes()}
+
+        assert "00000005--fresh" in pending_ids
+        assert "00000005--fresh" not in recycled_ids
+
+    def test_single_segment_stub_still_recycled(self, tmp_path):
+        """Genuine single-segment stubs (never shown as pending) stay 'invalid'."""
+        d = tmp_path / "00000002--stub--0"
+        d.mkdir()
+        (d / "rlog.zst").write_bytes(b"")
+        store = self._build_store(tmp_path)
+
+        recycled = {r["_local_id"]: r for r in store.get_recycled_routes()}
+        assert "00000002--stub" in recycled
+        assert recycled["00000002--stub"]["recycled_reason"] == "invalid"
+
+
 # ─── Route operations ────────────────────────────────────────────────
 
 class TestRouteOperations:

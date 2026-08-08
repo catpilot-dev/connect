@@ -207,12 +207,11 @@ class TestCleanupPhase2:
         mock_store._preserved.add(lid)
         seg_paths = _seg_paths(mock_store, lid)
 
-        call_count = {"n": 0}
+        # Stay below emergency until the saved route is reclaimed, then recover.
+        # (Robust to the exact number of _free_bytes() calls per cleanup pass.)
         def fake_disk_usage(path):
-            call_count["n"] += 1
-            if call_count["n"] <= 3:
-                return _make_disk_usage(EMERGENCY_BYTES - 1)
-            return _make_disk_usage(EMERGENCY_BYTES + 1)
+            saved_gone = not any(p.exists() for p in seg_paths)
+            return _make_disk_usage(EMERGENCY_BYTES + 1 if saved_gone else EMERGENCY_BYTES - 1)
 
         with patch("storage_management.shutil.disk_usage", side_effect=fake_disk_usage):
             result = run_cleanup(mock_store)

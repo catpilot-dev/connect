@@ -1125,7 +1125,13 @@ class RouteStore:
         Includes:
         - Routes in _hidden set → recycled_reason: "deleted"
         - Routes with maxqlog < 1 and no distance (stubs) → recycled_reason: "invalid"
-        - Routes with no wall_time_nanos → recycled_reason: "invalid"
+        - Scanned routes with no wall_time_nanos → recycled_reason: "invalid"
+
+        Not-yet-enriched routes (present in _raw but absent from _metadata) are
+        NOT recycled: they lack wall_time_nanos only because enrichment hasn't
+        run yet, and get_pending_route_ids() surfaces them as pending cards.
+        Treating them as invalid made the same route show as "Scanning…" in
+        Recent and "Invalid" in Recycled simultaneously.
 
         Uses _build_route() to construct route dicts with recycled_reason added.
         """
@@ -1139,10 +1145,10 @@ class RouteStore:
                 route["hidden_at"] = self._hidden[local_id]
             elif route["maxqlog"] < 1 and not route.get("distance_m"):
                 route["recycled_reason"] = "invalid"
-            elif not internal.get("wall_time_nanos"):
+            elif local_id in self._metadata and not internal.get("wall_time_nanos"):
                 route["recycled_reason"] = "invalid"
             else:
-                continue  # valid, non-hidden route — skip
+                continue  # valid route, or pending (unscanned) — skip
 
             recycled.append(route)
 

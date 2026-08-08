@@ -22,18 +22,24 @@ async def handle_routes_list(request: web.Request) -> web.Response:
     Query params:
       filter: recent (default) | saved | all | recycled
       limit: max results per page (default 5)
+      offset: skip this many results before the page (default 0) — used for
+              classic Previous/Next pagination across all tabs
       before_counter: pagination cursor (all tab only)
       after_gps: Unix epoch — only routes with gps_time >= this (all tab)
       before_gps: Unix epoch — only routes with gps_time <= this (all tab)
 
     Returns known routes plus pending placeholders (pending=true) for
     routes not yet scanned. Frontend shows spinner cards for pending items.
+    The full candidate list is built and sorted per tab, then sliced to
+    [offset : offset+limit] — the expensive per-route cleaning runs only on
+    the returned slice.
     """
     store = request.app["store"]
     routes = await store.async_scan()
 
     tab = request.query.get("filter", "recent")
     limit = int(request.query.get("limit", 5))
+    offset = max(0, int(request.query.get("offset", 0)))
     before_counter = int(request.query.get("before_counter", 999999999))
 
     # GPS date range filter (applies to all tabs)
@@ -57,7 +63,7 @@ async def handle_routes_list(request: web.Request) -> web.Response:
     # ── Recycled tab: hidden + invalid routes ──
     if tab == "recycled":
         recycled = store.get_recycled_routes()
-        route_list = []
+        filtered = []
         for r in recycled:
             lid = r.get("_local_id", "")
             if after_gps or before_gps:
@@ -68,6 +74,12 @@ async def handle_routes_list(request: web.Request) -> web.Response:
                         continue
                     if before_gps and gps_time > before_gps:
                         continue
+            filtered.append(r)
+        filtered.sort(key=lambda r: _route_counter(r.get("_local_id", "")), reverse=True)
+
+        route_list = []
+        for r in filtered[offset:offset + limit]:
+            lid = r.get("_local_id", "")
             r_with_url = _set_route_url(r, request)
             cleaned = _clean_route(r_with_url)
             cleaned["route_counter"] = _route_counter(lid)
@@ -77,17 +89,18 @@ async def handle_routes_list(request: web.Request) -> web.Response:
 
     # ── Saved tab: preserved routes only ──
     if tab == "saved":
-        route_list = []
         sorted_routes = sorted(
             routes.values(),
             key=lambda r: _route_counter(r.get("_local_id", "")),
             reverse=True,
         )
-        for r in sorted_routes:
-            if not store.is_preserved(r["_local_id"]):
-                continue
-            if not _gps_in_range(r["_local_id"]):
-                continue
+        filtered = [
+            r for r in sorted_routes
+            if store.is_preserved(r["_local_id"]) and _gps_in_range(r["_local_id"])
+        ]
+
+        route_list = []
+        for r in filtered[offset:offset + limit]:
             r_with_url = _set_route_url(r, request)
             cleaned = _clean_route(r_with_url)
             cleaned["route_counter"] = _route_counter(r.get("_local_id", ""))
@@ -116,11 +129,13 @@ async def handle_routes_list(request: web.Request) -> web.Response:
 
     items.sort(key=lambda x: x[1], reverse=True)
 
+    # Legacy cursor filter (all tab only) — applied before the offset slice so
+    # both before_counter and offset/limit pagination continue to work.
+    if tab == "all":
+        items = [it for it in items if it[1] < before_counter]
+
     route_list = []
-    for kind, counter, data in items:
-        # Pagination (all tab only)
-        if tab == "all" and counter >= before_counter:
-            continue
+    for kind, counter, data in items[offset:offset + limit]:
         if kind == "route":
             r_with_url = _set_route_url(data, request)
             cleaned = _clean_route(r_with_url)
@@ -138,8 +153,6 @@ async def handle_routes_list(request: web.Request) -> web.Response:
                 "pending": True,
                 "seg_count": data["seg_count"],
             })
-        if len(route_list) >= limit:
-            break
 
     return web.json_response(route_list)
 

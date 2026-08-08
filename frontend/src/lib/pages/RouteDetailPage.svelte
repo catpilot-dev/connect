@@ -693,6 +693,12 @@
     try {
       // Clear cached derived files on server and re-enrich metadata
       await enrichRoute(route.local_id)
+      // Enrichment re-anchors the route to GPS time, which changes its
+      // date-based /connectdata URL. Re-fetch NOW — before regenerating
+      // events — so events.json requests hit the corrected URL. Using the
+      // stale pre-enrich URL 404s every segment (silently, since fetchEvents
+      // swallows it), so events never cache and the route never enriches.
+      route = await fetchRoute(route.local_id)
       // Re-fetch events (regenerates events.json from rlogs)
       enrichDone = 0
       enrichTotal = (route.maxqlog ?? 0) + 1
@@ -701,7 +707,8 @@
         enrichTotal = total
       })
       timelineEvents = buildTimelineEvents(raw, getRouteDurationMs(route))
-      // Re-fetch route to get updated metadata (engagement %, addresses, enriched flag)
+      // Re-fetch route again to pick up metadata computed once events are
+      // cached (engagement %, addresses, enriched flag).
       route = await fetchRoute(route.local_id)
       // Re-fetch coords too
       fetchAllCoords(route).then(c => coords = c).catch(() => {})
