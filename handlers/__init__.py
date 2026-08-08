@@ -103,9 +103,6 @@ from .ssh_keys import (
     handle_ssh_keys_get,
     handle_ssh_keys_set,
     handle_ssh_keys_delete,
-    handle_ice_servers,
-    handle_webrtc,
-    handle_webrtc_health,
 )
 
 from .dashboard import (
@@ -113,8 +110,7 @@ from .dashboard import (
     handle_dashboard_ws,
 )
 
-from .driving import (
-    handle_driving_ws,
+from .hud_data import (
     handle_hud_data,
 )
 
@@ -153,7 +149,5 @@ from .stubs import (
     handle_stub_empty_array,
     handle_stub_error,
 )
-
-from .stream import handle_ui_stream, handle_ui_stream_frame
 
 from .spa import handle_spa

@@ -416,13 +416,6 @@
 
   <!-- ── Nav ───────────────────────────────────────────────────────────────── -->
   <nav class="home-nav">
-    <a href="/driving" class="nav-btn nav-drive">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
-        <circle cx="12" cy="12" r="10"/>
-        <polygon points="10,8 16,12 10,16" fill="currentColor" stroke="none"/>
-      </svg>
-      DRIVE
-    </a>
     <div class="nav-secondary">
       <a href="/routes" class="nav-btn">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round">
@@ -856,32 +849,9 @@
     background: rgba(8,11,16,0.96);
   }
 
-  .nav-drive {
-    flex: 1.4;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 0.22rem;
-    padding: 0.6rem 0.5rem;
-    border-radius: 9px;
-    font-family: var(--font-data);
-    font-size: 0.65rem;
-    font-weight: 800;
-    letter-spacing: 0.14em;
-    color: var(--bg);
-    background: var(--amber);
-    border: none;
-    text-decoration: none;
-    box-shadow: 0 0 18px rgba(247,183,49,0.25), 0 2px 8px rgba(0,0,0,0.4);
-    transition: box-shadow 0.15s, transform 0.12s;
-  }
-  .nav-drive svg { width: 1.15rem; height: 1.15rem; }
-  .nav-drive:active { box-shadow: 0 0 26px rgba(247,183,49,0.4); transform: scale(0.97); }
-
   .nav-secondary {
     flex: 1;
     display: flex;
-    flex-direction: column;
     gap: 0.35rem;
   }
 

@@ -116,14 +116,8 @@ from handlers import (
     handle_ssh_keys_get,
     handle_ssh_keys_set,
     handle_ssh_keys_delete,
-    handle_ice_servers,
-    handle_webrtc,
-    handle_webrtc_health,
-    handle_driving_ws,
     handle_hud_data,
     handle_home_ws,
-    handle_ui_stream,
-    handle_ui_stream_frame,
 )
 from route_store import DEFAULT_DATA_DIR, DEFAULT_PORT, RouteStore
 from storage_management import run_cleanup
@@ -331,29 +325,17 @@ def create_app(data_dir: str, static_dir: str) -> web.Application:
     app.router.add_get("/v1/updates/check", handle_updates_check)
     app.router.add_post("/v1/updates/apply", handle_updates_apply)
 
-    # WebRTC signaling proxy (to local webrtcd on port 5001)
     # SSH keys
     app.router.add_get("/v1/ssh-keys", handle_ssh_keys_get)
     app.router.add_post("/v1/ssh-keys", handle_ssh_keys_set)
     app.router.add_delete("/v1/ssh-keys", handle_ssh_keys_delete)
 
-    app.router.add_get("/api/ice-servers", handle_ice_servers)
-    app.router.add_post("/api/webrtc", handle_webrtc)
-    app.router.add_get("/api/webrtc/health", handle_webrtc_health)
-
     # Dashboard telemetry (replay REST + live WebSocket)
     app.router.add_get("/v1/dashboard/telemetry/{routeName}/{segments}", handle_dashboard_telemetry)
     app.router.add_get("/ws/dashboard", handle_dashboard_ws)
 
-    # Driving page (live camera + HUD overlay WebSocket)
-    app.router.add_get("/ws/driving", handle_driving_ws)
-
     # Home page (offroad device status WebSocket)
     app.router.add_get("/ws/home", handle_home_ws)
-
-    # UI MJPEG stream (STREAM_UI mode — phone display)
-    app.router.add_get("/stream/ui", handle_ui_stream)
-    app.router.add_get("/stream/ui/frame", handle_ui_stream_frame)
 
     # Signal browser (catalog + data extraction)
     app.router.add_get("/v1/route/{routeName}/signals/catalog", handle_signal_catalog)

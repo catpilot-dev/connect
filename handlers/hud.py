@@ -10,7 +10,6 @@ from pathlib import Path
 from aiohttp import web
 
 from handler_helpers import error_response, get_route_or_404, resolve_route_name
-from hud_stream import HLS_DIR, HudStreamManager
 
 logger = logging.getLogger("connect")
 
@@ -29,6 +28,9 @@ RENDER_SCRIPT_DRM = Path(__file__).parent.parent / "render_clip_drm.py"  # legac
 OPENPILOT_DIR = Path(_OPENPILOT_DIR_STR)
 REPLAY_BIN = Path(_REPLAY_BIN_STR)
 
+MANAGER_CMD = [PYTHON_BIN, "./manager.py"]
+MANAGER_CWD = os.path.join(_OPENPILOT_DIR_STR, "system/manager")
+
 
 def _is_manager_running() -> bool:
     """Check if openpilot manager is running."""
@@ -36,9 +38,34 @@ def _is_manager_running() -> bool:
     return result.returncode == 0
 
 
+def _start_manager():
+    """Restart openpilot manager after HUD operations."""
+    logger.info("Restarting openpilot manager...")
+    # Kill any leftover UI/replay processes
+    subprocess.run(["pkill", "-f", "selfdrive.ui.ui"], capture_output=True)
+    time.sleep(0.5)
+
+    env = os.environ.copy()
+    env["PYTHONPATH"] = _OPENPILOT_DIR_STR
+    env["PATH"] = "/usr/local/venv/bin:/usr/local/bin:/usr/bin:/bin"
+    env["HOME"] = os.environ.get("HOME", "/root")
+
+    try:
+        subprocess.Popen(
+            MANAGER_CMD,
+            cwd=MANAGER_CWD,
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        logger.info("Manager started")
+    except Exception as e:
+        logger.error("Failed to start manager: %s", e)
+
+
 async def _ensure_manager():
     """Verify openpilot manager is running after HUD cleanup; restart if not."""
-    from hud_stream import _start_manager
     loop = asyncio.get_event_loop()
     await asyncio.sleep(2)
     running = await loop.run_in_executor(None, _is_manager_running)
@@ -499,165 +526,6 @@ async def handle_hud_video(request: web.Request) -> web.Response:
             "Cache-Control": "public, max-age=86400",
         },
     )
-
-
-# ─── HUD live streaming ──────────────────────────────────────────────
-
-async def handle_hud_stream_start(request: web.Request) -> web.Response:
-    """POST /v1/hud/stream/start — start HUD live streaming pipeline."""
-    mgr: HudStreamManager = request.app.get("stream_manager")
-    if not mgr:
-        raise web.HTTPServiceUnavailable(
-            text=json.dumps({"error": "Streaming not available on this device"}))
-
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
-
-    route_name = body.get("route", "")
-    if not route_name:
-        raise web.HTTPBadRequest(text=json.dumps({"error": "Missing route name"}))
-
-    route_name = route_name.replace("|", "/")
-    store = request.app["store"]
-    route = store.get_route(route_name)
-    if not route:
-        raise web.HTTPNotFound(
-            text=json.dumps({"error": f"Route {route_name} not found"}))
-
-    start_sec = body.get("start", 0)
-    hd = bool(body.get("hd", False))
-
-    # Ensure replay binary is available (auto-rebuild from scons cache if needed)
-    if not await _ensure_replay_binary():
-        raise web.HTTPServiceUnavailable(
-            text=json.dumps({"error": "Replay binary not available and rebuild failed"}))
-
-    mode = body.get("mode", "webrtc")  # "webrtc" (default), "ws" (WebSocket fMP4), or "hls" (legacy)
-    if mode not in ("ws", "hls", "webrtc"):
-        mode = "webrtc"
-
-    await mgr.start(
-        route_name=route["fullname"],
-        local_id=route["_local_id"],
-        dongle_id=route["dongle_id"],
-        data_dir=str(store.data_dir),
-        start_sec=start_sec,
-        max_seg=route.get("maxqlog", -1),
-        hd=hd,
-        mode=mode,
-    )
-
-    return web.json_response(mgr.status)
-
-
-async def handle_hud_stream_stop(request: web.Request) -> web.Response:
-    """POST /v1/hud/stream/stop — stop HUD live streaming, restore compositor."""
-    mgr: HudStreamManager = request.app.get("stream_manager")
-    if mgr:
-        await mgr.stop()
-        # Verify production UI is restored after stream cleanup
-        asyncio.create_task(_ensure_manager())
-    return web.json_response({"status": "idle"})
-
-
-async def handle_hud_stream_status(request: web.Request) -> web.Response:
-    """GET /v1/hud/stream/status — check streaming pipeline status."""
-    mgr: HudStreamManager = request.app.get("stream_manager")
-    if not mgr:
-        return web.json_response({"status": "idle"})
-    return web.json_response(mgr.status)
-
-
-async def handle_hud_stream_serve(request: web.Request) -> web.Response:
-    """GET /v1/hud/stream/{filename} — serve HLS .m3u8 and .ts files."""
-    filename = request.match_info["filename"]
-
-    if not (filename.endswith(".m3u8") or filename.endswith(".ts")):
-        raise web.HTTPForbidden(text="Only .m3u8 and .ts files allowed")
-
-    filepath = HLS_DIR / filename
-    if not filepath.exists():
-        raise web.HTTPNotFound()
-
-    if filename.endswith(".m3u8"):
-        return web.Response(
-            body=filepath.read_bytes(),
-            content_type="application/vnd.apple.mpegurl",
-            headers={"Cache-Control": "no-cache, no-store"},
-        )
-    else:
-        return web.FileResponse(
-            filepath,
-            headers={
-                "Content-Type": "video/mp2t",
-                "Cache-Control": "public, max-age=60",
-            },
-        )
-
-
-async def handle_hud_stream_offer(request: web.Request) -> web.Response:
-    """POST /v1/hud/stream/offer — WebRTC SDP offer/answer exchange."""
-    mgr: HudStreamManager = request.app.get("stream_manager")
-    if not mgr or mgr._mode != "webrtc":
-        return web.json_response(
-            {"error": "No active WebRTC stream"}, status=400)
-
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "Invalid JSON"}, status=400)
-
-    offer_sdp = body.get("sdp", "")
-    if not offer_sdp:
-        return web.json_response({"error": "Missing SDP"}, status=400)
-
-    answer_sdp = await mgr.create_webrtc_answer(offer_sdp)
-    return web.json_response({"sdp": answer_sdp, "type": "answer"})
-
-
-async def handle_hud_stream_ws(request: web.Request) -> web.WebSocketResponse:
-    """GET /v1/hud/stream/ws — WebSocket endpoint for fMP4 HUD stream.
-
-    The client connects after POST /v1/hud/stream/start (mode=ws).
-    Server sends binary fMP4 chunks; client appends to MSE SourceBuffer.
-    Client can send "stop" text message to terminate the stream.
-    """
-    ws = web.WebSocketResponse()
-    await ws.prepare(request)
-
-    mgr: HudStreamManager = request.app.get("stream_manager")
-    if not mgr or mgr._mode != "ws":
-        await ws.send_json({"error": "No active WebSocket stream"})
-        await ws.close()
-        return ws
-
-    logger.info("HUD WebSocket client connected")
-
-    try:
-        # Send fMP4 chunks until stream ends or client disconnects
-        while not ws.closed and mgr.is_active and mgr._mode == "ws":
-            chunk = await mgr.ws_get_chunk(timeout=2.0)
-            if chunk is None:
-                # Timeout — check if stream is still alive
-                if not mgr.is_active:
-                    break
-                continue
-            try:
-                await ws.send_bytes(chunk)
-            except ConnectionResetError:
-                break
-    except asyncio.CancelledError:
-        pass
-    except Exception as e:
-        logger.error("HUD WebSocket error: %s", e)
-    finally:
-        logger.info("HUD WebSocket client disconnected")
-        if not ws.closed:
-            await ws.close()
-
-    return ws
 
 
 # ─── Screencast: play fcamera on C3 screen ───────────────────────────

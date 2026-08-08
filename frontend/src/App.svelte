@@ -12,7 +12,6 @@
   import SignalBrowserPage from './lib/pages/SignalBrowserPage.svelte'
   import PluginsPage from './lib/pages/PluginsPage.svelte'
   import ScreenshotsPage from './lib/pages/ScreenshotsPage.svelte'
-  import DrivingPage from './lib/pages/DrivingPage.svelte'
   import HomePage from './lib/pages/HomePage.svelte'
 
   let error = $state(null)
@@ -25,7 +24,6 @@
     if (parts[0] === 'settings') return 'settings'
     if (parts[0] === 'plugins') return 'plugins'
     if (parts[0] === 'screenshots') return 'screenshots'
-    if (parts[0] === 'driving') return 'driving'
     if (parts[0] === 'home') return 'home'
     if (parts[0] === 'routes') return 'routes'
     // if (parts[0] === 'dashboard') return 'dashboard'  // disabled for now
@@ -109,16 +107,6 @@
     }
   }
 
-  function autoNavigate(onroad) {
-    if (onroad && page !== 'driving') {
-      page = 'driving'
-      history.replaceState(null, '', '/driving')
-    } else if (!onroad && page === 'driving') {
-      page = 'home'
-      history.replaceState(null, '', '/home')
-    }
-  }
-
   function startOnroadWatcher() {
     const proto = location.protocol === 'https:' ? 'wss' : 'ws'
     let ws
@@ -128,9 +116,7 @@
         try {
           const msg = JSON.parse(e.data)
           if (msg.type === 'device' && 'isOnroad' in msg) {
-            const wasOnroad = isOnroad
             isOnroad = msg.isOnroad
-            if (isOnroad !== wasOnroad) autoNavigate(isOnroad)
           }
         } catch {}
       }
@@ -161,9 +147,7 @@
       updates = updatesResult.value
     }
 
-    // Initial navigation based on onroad state
     page = parsePage()
-    autoNavigate(isOnroad)
     const initialRoute = parseRoutePath()
     if (initialRoute) selectedRoute.set(initialRoute)
 
@@ -227,12 +211,6 @@
     history.pushState(null, '', '/plugins')
   }
 
-  function showDriving() {
-    page = 'driving'
-    selectedRoute.set(null)
-    history.pushState(null, '', '/driving')
-  }
-
   function showScreenshots() {
     page = 'screenshots'
     selectedRoute.set(null)
@@ -249,9 +227,7 @@
   }
 </script>
 
-{#if page === 'driving'}
-  <DrivingPage />
-{:else if page === 'home'}
+{#if page === 'home'}
   <HomePage />
 {:else if page === 'signals'}
   <SignalBrowserPage />
@@ -273,19 +249,11 @@
             Home
           </button>
           <button
-            class="px-3 py-1.5 text-sm rounded transition-colors {page === 'driving' ? 'bg-surface-700 text-surface-50' : 'text-surface-400 hover:text-surface-200'}"
-            onclick={showDriving}
-          >
-            Driving
-          </button>
-          {#if !isOnroad}
-          <button
             class="px-3 py-1.5 text-sm rounded transition-colors {page === 'routes' && !$selectedRoute ? 'bg-surface-700 text-surface-50' : 'text-surface-400 hover:text-surface-200'}"
             onclick={showRoutes}
           >
             Routes
           </button>
-          {/if}
           <!-- Dashboard button disabled for now
           <button
             class="px-3 py-1.5 text-sm rounded transition-colors {page === 'dashboard' ? 'bg-surface-700 text-surface-50' : 'text-surface-400 hover:text-surface-200'}"
@@ -339,15 +307,6 @@
         <PluginsPage />
       {:else if page === 'screenshots'}
         <ScreenshotsPage />
-      {:else if isOnroad}
-        <div class="flex items-center justify-center h-64">
-          <div class="text-center">
-            <p class="text-surface-400 text-lg mb-4">Routes unavailable while driving</p>
-            <button class="px-4 py-2 bg-surface-700 text-surface-50 rounded" onclick={showDriving}>
-              Open Driving View
-            </button>
-          </div>
-        </div>
       {:else if $selectedRoute}
         <RouteDetailPage />
       {:else}
