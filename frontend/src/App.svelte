@@ -56,59 +56,6 @@
     return () => lock?.release()
   }
 
-  // ── Phone GPS sender ─────────────────────────────────────────────────────
-  // Streams browser Geolocation fixes to /ws/gps on the device so the
-  // phone_gps plugin can publish gpsLocationExternal cereal messages.
-  function startGpsSender() {
-    if (!navigator.geolocation) return
-
-    const proto = location.protocol === 'https:' ? 'wss' : 'ws'
-    let ws = null
-    let watchId = null
-    let reconnectTimer = null
-
-    function connect() {
-      ws = new WebSocket(`${proto}://${location.host}/ws/gps`)
-      ws.onopen = () => {
-        watchId = navigator.geolocation.watchPosition(
-          (pos) => {
-            if (ws.readyState !== WebSocket.OPEN) return
-            const c = pos.coords
-            ws.send(JSON.stringify({
-              latitude:         c.latitude,
-              longitude:        c.longitude,
-              altitude:         c.altitude,
-              speed:            c.speed,
-              heading:          c.heading,
-              accuracy:         c.accuracy,
-              altitudeAccuracy: c.altitudeAccuracy,
-              timestamp:        pos.timestamp,
-            }))
-          },
-          (err) => console.warn('phone_gps: geolocation error', err.message),
-          { enableHighAccuracy: true, maximumAge: 1000, timeout: 10000 },
-        )
-      }
-      ws.onclose = () => {
-        if (watchId !== null) { navigator.geolocation.clearWatch(watchId); watchId = null }
-        // Reconnect after 5s if page is still open
-        reconnectTimer = setTimeout(connect, 5000)
-      }
-    }
-
-    connect()
-
-    return () => {
-      clearTimeout(reconnectTimer)
-      if (watchId !== null) navigator.geolocation.clearWatch(watchId)
-      if (ws) ws.close()
-    }
-  }
-
-  // isOnroad gates the Update, Reboot and Software controls, so it must not go
-  // stale while the page sits open — a session that starts parked and then
-  // drives off would otherwise keep offering them. Polled rather than streamed:
-  // /ws/home is gone, and this only needs to be right to within a few seconds.
   function startOnroadWatcher() {
     const timer = setInterval(async () => {
       try { isOnroad = await fetchIsOnroad() } catch {}
@@ -165,9 +112,8 @@
     })
 
     const stopWakeLock = startWakeLock()
-    const stopGps = startGpsSender()
     const stopOnroadWatcher = startOnroadWatcher()
-    return () => { unsub(); if (stopWakeLock) stopWakeLock(); if (stopGps) stopGps(); stopOnroadWatcher() }
+    return () => { unsub(); if (stopWakeLock) stopWakeLock(); stopOnroadWatcher() }
   })
 
   function showRoutes() {
