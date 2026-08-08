@@ -6,7 +6,6 @@ import time
 from aiohttp import web
 
 from handler_helpers import error_response, parse_json, read_param, write_param
-from route_helpers import _route_engaged_distance
 from route_store import _route_counter
 from storage_management import get_storage_info
 
@@ -82,49 +81,27 @@ async def handle_device_get(request: web.Request) -> web.Response:
 
 
 async def handle_device_stats(request: web.Request) -> web.Response:
-    """GET /v1.1/devices/{dongleId}/stats — driving statistics with engagement"""
+    """GET /v1.1/devices/{dongleId}/stats — GPS-anchored driving statistics.
+
+    Serves the aggregate materialized by RouteStore._compute_stats (recomputed
+    when routes change / a drive is POSTed). Does NOT read the system wall clock:
+    on AGNOS it is build-time-seeded and unreliable.
+    """
     store = request.app["store"]
     await store.async_scan()
 
-    # Ensure new routes have basic metadata (GPS time, coords) for accurate week filter
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, store.enrich_new_routes)
-    routes = store._routes
+    # Fallback: brief-enrich routes still missing a GPS time (device had no
+    # lock, or an old route predating device-supplied gps_time). Skipped while
+    # onroad to avoid competing with openpilot. Uses qlog GPS time — never the
+    # wall clock.
+    if not store._is_onroad():
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, store.enrich_new_routes)
 
-    week_ago = time.time() - 7 * 86400
-
-    all_stats = {"distance_m": 0.0, "minutes": 0, "routes": 0, "engaged_m": 0.0, "total_m_with_engagement": 0.0}
-    week_stats = {"distance_m": 0.0, "minutes": 0, "routes": 0, "engaged_m": 0.0, "total_m_with_engagement": 0.0}
-
-    for r in routes.values():
-        minutes = len(r["_segments"])  # ~1 min per segment
-        distance_m = r.get("distance_m") or 0
-        engaged_m, total_m = _route_engaged_distance(store, r)
-
-        all_stats["routes"] += 1
-        all_stats["minutes"] += minutes
-        all_stats["distance_m"] += distance_m
-        # total_m_with_engagement is the odometer of routes that had any
-        # engagement — exclude zero-engagement routes from both numerator and
-        # denominator so the ratio reflects "engaged share of engaged-eligible distance."
-        if total_m > 0 and engaged_m > 0:
-            all_stats["engaged_m"] += engaged_m
-            all_stats["total_m_with_engagement"] += total_m
-
-        if r.get("create_time", 0) >= week_ago:
-            week_stats["routes"] += 1
-            week_stats["minutes"] += minutes
-            week_stats["distance_m"] += distance_m
-            if total_m > 0 and engaged_m > 0:
-                week_stats["engaged_m"] += engaged_m
-                week_stats["total_m_with_engagement"] += total_m
-
-    for s in (all_stats, week_stats):
-        s["distance_m"] = round(s["distance_m"], 1)
-        s["engaged_m"] = round(s["engaged_m"], 1)
-        s["total_m_with_engagement"] = round(s["total_m_with_engagement"], 1)
-
-    return web.json_response({"all": all_stats, "week": week_stats})
+    stats = store._stats
+    if not stats.get("all"):
+        stats = store._compute_stats()
+    return web.json_response({"all": stats["all"], "week": stats["week"]})
 
 
 async def handle_device_location(request: web.Request) -> web.Response:

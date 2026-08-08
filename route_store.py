@@ -131,6 +131,7 @@ class RouteStore:
         self._metadata: dict = {}         # route_id -> route_metadata.py format
         self._hidden: dict = {}            # local_id -> hide_time (Unix epoch)
         self._preserved: set = set()      # local_ids protected from cleanup
+        self._stats: dict = {"all": {}, "week": {}, "reference_time": 0}
         # Dot-prefixed filename so uploader.py clear_locks() skips it
         self._metadata_path = Path(data_dir) / METADATA_FILE
         self._agnos_version: str | None = None
@@ -296,6 +297,10 @@ class RouteStore:
         if bookmarks:
             result["bookmarks"] = bookmarks
 
+        ds = meta.get("drive_stats")
+        if isinstance(ds, dict):
+            result["drive_stats"] = ds
+
         return result
 
     def _needs_enrich(self, lid: str) -> bool:
@@ -418,6 +423,7 @@ class RouteStore:
             "git_remote": internal.get("git_remote"),
             "is_public": True,
             "distance_m": self._calc_route_distance(local_id, info["segments"]),
+            "drive_stats": internal.get("drive_stats"),
             "maxqlog": max_seg,
             "engagement_pct": internal.get("engagement_pct"),
             "platform": internal.get("car_fingerprint"),
@@ -446,6 +452,53 @@ class RouteStore:
             "_seg_start_times": seg_start_times,
             "_seg_end_times": seg_end_times,
         }
+
+    WEEK_SECONDS = 7 * 86400
+
+    def _compute_stats(self) -> dict:
+        """Aggregate all-time and past-7-day drive stats from brief per-route
+        records. Anchored to the newest route's GPS create_time — never the
+        system wall clock (AGNOS seeds it from build time). Result cached on
+        self._stats and returned.
+        """
+        routes = list(self._routes.values())
+        reference_now = max((r.get("create_time") or 0 for r in routes), default=0)
+        week_ago = reference_now - self.WEEK_SECONDS
+
+        def _empty():
+            return {"distance_m": 0.0, "minutes": 0, "routes": 0,
+                    "engaged_m": 0.0, "total_m_with_engagement": 0.0}
+
+        all_stats, week_stats = _empty(), _empty()
+
+        for r in routes:
+            ds = r.get("drive_stats") or {}
+            distance_m = ds.get("distance_m")
+            if distance_m is None:
+                distance_m = r.get("distance_m") or 0
+            duration_s = ds.get("duration_s")
+            minutes = round(duration_s / 60) if duration_s is not None else len(r.get("_segments", []))
+            engaged_m = ds.get("engaged_m")
+            has_engagement = engaged_m is not None and distance_m and distance_m > 0
+
+            buckets = [all_stats]
+            if (r.get("create_time") or 0) >= week_ago:
+                buckets.append(week_stats)
+            for b in buckets:
+                b["routes"] += 1
+                b["minutes"] += minutes
+                b["distance_m"] += distance_m
+                if has_engagement:
+                    b["engaged_m"] += engaged_m
+                    b["total_m_with_engagement"] += distance_m
+
+        for s in (all_stats, week_stats):
+            s["distance_m"] = round(s["distance_m"], 1)
+            s["engaged_m"] = round(s["engaged_m"], 1)
+            s["total_m_with_engagement"] = round(s["total_m_with_engagement"], 1)
+
+        self._stats = {"all": all_stats, "week": week_stats, "reference_time": reference_now}
+        return self._stats
 
     def _rebuild_routes(self):
         """Rebuild route dicts from raw data + current metadata. Skips hidden routes."""
@@ -479,6 +532,8 @@ class RouteStore:
         self._routes = routes
         self._fullname_map = fullname_map
         self._local_id_map = local_id_map
+
+        self._compute_stats()
 
     def _find_log(self, seg_path: str) -> str | None:
         """Find best log file in a segment directory: qlog first, rlog fallback."""
@@ -778,7 +833,10 @@ class RouteStore:
         """
         new_routes = [
             (lid, info) for lid, info in self._raw.items()
-            if lid not in self._metadata and lid not in self._hidden
+            if lid not in self._hidden
+            and (lid not in self._metadata
+                 or (self._metadata[lid].get("gps_time") is None
+                     and not self._metadata[lid].get("gps_enrich_attempted")))
         ]
         if not new_routes:
             return 0
@@ -834,8 +892,13 @@ class RouteStore:
                 if seg_count < 2 and not has_gps:
                     continue
 
+                existing = self._metadata.get(local_id, {})
                 entry = self._log_to_metadata_entry(local_id, result)
                 entry["enriched"] = False  # Full enrichment deferred to Enrich button
+                if existing.get("drive_stats"):
+                    entry["drive_stats"] = existing["drive_stats"]
+                if not result.get("gps_time"):
+                    entry["gps_enrich_attempted"] = True
                 self._metadata[local_id] = entry
 
                 # Reverse-geocode start address from initData GPS
@@ -998,6 +1061,28 @@ class RouteStore:
         self._rebuild_routes()
         self._save_metadata()
 
+    def set_drive_stats(self, local_id: str, stats: dict, gps_time: float | None = None):
+        """Store brief per-drive stats (distance_m, duration_s, engaged_m,
+        engaged_s) posted by the device at offroad, plus the drive's GPS start
+        time when the device had a fix. gps_time lets the route enter the
+        aggregate immediately without qlog enrichment (GPS time only — never the
+        wall clock). Triggers a recompute via _rebuild_routes.
+        """
+        meta = self._metadata.get(local_id)
+        if not meta:
+            meta = {"route_id": local_id}
+            self._metadata[local_id] = meta
+        meta["drive_stats"] = {
+            "distance_m": float(stats.get("distance_m", 0.0)),
+            "duration_s": float(stats.get("duration_s", 0.0)),
+            "engaged_m": float(stats.get("engaged_m", 0.0)),
+            "engaged_s": float(stats.get("engaged_s", 0.0)),
+        }
+        if gps_time:
+            meta["gps_time"] = float(gps_time)
+        self._rebuild_routes()
+        self._save_metadata()
+
     def add_bookmark(self, local_id: str, time_sec: float, label: str) -> list:
         """Add a bookmark to a route. Returns updated bookmark list."""
         meta = self._metadata.get(local_id)
@@ -1109,7 +1194,10 @@ class RouteStore:
             return False
         log_meta = self._enrich_one(local_id, info["segments"])
         if log_meta:
+            existing = self._metadata.get(local_id, {})
             entry = self._log_to_metadata_entry(local_id, log_meta)
+            if existing.get("drive_stats"):
+                entry["drive_stats"] = existing["drive_stats"]
             self._metadata[local_id] = entry
             self._rebuild_routes()
             self._save_metadata()

@@ -29,6 +29,7 @@ from .routes import (
     handle_share_signature,
     handle_route_delete,
     handle_route_note,
+    handle_route_drive_stats,
     handle_route_bookmark_add,
     handle_route_bookmark_update,
     handle_route_bookmark_delete,

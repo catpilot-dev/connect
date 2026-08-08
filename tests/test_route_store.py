@@ -706,3 +706,246 @@ class TestLogToMetadataEntry:
         log_meta = {"dongle_id": "test"}
         entry = store._log_to_metadata_entry("test--route", log_meta)
         assert entry["creation_time"] is None
+
+
+# ─── RouteStore._compute_stats ───────────────────────────────────────
+
+class TestComputeStats:
+    def _store_with_routes(self, tmp_path, routes):
+        store = RouteStore(str(tmp_path))
+        store._routes = routes
+        return store
+
+    def _route(self, create_time, distance_m, segments, drive_stats=None):
+        r = {"create_time": create_time, "distance_m": distance_m,
+             "_segments": [{"number": n, "path": ""} for n in range(segments)]}
+        if drive_stats is not None:
+            r["drive_stats"] = drive_stats
+        return r
+
+    def test_week_independent_of_wall_clock(self, tmp_path):
+        # newest route is at t=1_000_000; one route 10 days earlier, one 1 day earlier
+        newest = 1_000_000.0
+        day = 86400.0
+        routes = {
+            "a": self._route(newest, 10_000, 10,
+                             {"distance_m": 10_000, "duration_s": 600, "engaged_m": 8_000, "engaged_s": 480}),
+            "b": self._route(newest - 1 * day, 5_000, 5,
+                             {"distance_m": 5_000, "duration_s": 300, "engaged_m": 4_000, "engaged_s": 240}),
+            "c": self._route(newest - 10 * day, 20_000, 20,
+                             {"distance_m": 20_000, "duration_s": 1200, "engaged_m": 10_000, "engaged_s": 600}),
+        }
+        store = self._store_with_routes(tmp_path, routes)
+        # Stale wall clock (build time, years off) must not affect the result.
+        with patch("route_store.time.time", return_value=0.0):
+            s = store._compute_stats()
+        # week = routes within 7 days of newest GPS time -> a and b only
+        assert s["week"]["routes"] == 2
+        assert s["week"]["distance_m"] == 15_000
+        assert s["all"]["routes"] == 3
+        # week != all — the regression guard
+        assert s["week"]["routes"] != s["all"]["routes"]
+
+    def test_distance_based_engaged_pct(self, tmp_path):
+        newest = 1_000_000.0
+        routes = {
+            "a": self._route(newest, 10_000, 10,
+                             {"distance_m": 10_000, "duration_s": 600, "engaged_m": 8_000, "engaged_s": 480}),
+        }
+        store = self._store_with_routes(tmp_path, routes)
+        s = store._compute_stats()
+        # engaged_m / total_m_with_engagement = 8000/10000
+        assert s["all"]["engaged_m"] == 8_000
+        assert s["all"]["total_m_with_engagement"] == 10_000
+
+    def test_route_without_drive_stats_excluded_from_ratio(self, tmp_path):
+        newest = 1_000_000.0
+        routes = {
+            "a": self._route(newest, 10_000, 10,
+                             {"distance_m": 10_000, "duration_s": 600, "engaged_m": 8_000, "engaged_s": 480}),
+            "b": self._route(newest, 9_000, 9, None),  # no brief record
+        }
+        store = self._store_with_routes(tmp_path, routes)
+        s = store._compute_stats()
+        assert s["all"]["routes"] == 2               # counted for routes/distance
+        assert s["all"]["distance_m"] == 19_000
+        assert s["all"]["total_m_with_engagement"] == 10_000  # only 'a' in ratio
+
+    def test_empty_store_no_divide_by_zero(self, tmp_path):
+        store = self._store_with_routes(tmp_path, {})
+        s = store._compute_stats()
+        assert s["all"]["routes"] == 0
+        assert s["all"]["total_m_with_engagement"] == 0
+        assert s["reference_time"] == 0
+
+    def test_rebuild_populates_stats_from_metadata(self, tmp_path):
+        store = RouteStore(str(tmp_path))
+        # Minimal raw + metadata for one enriched route with brief stats.
+        lid = "00000001--aaaa"
+        store._raw = {lid: {"segments": [{"number": 0, "path": str(tmp_path)},
+                                         {"number": 1, "path": str(tmp_path)}]}}
+        store._metadata = {lid: {
+            "route_id": lid, "dongle_id": "d", "gps_time": 1_000_000.0,
+            "gps_coordinates": [1.0, 2.0], "total_distance_m": 10_000,
+            "drive_stats": {"distance_m": 10_000, "duration_s": 600,
+                            "engaged_m": 8_000, "engaged_s": 480},
+        }}
+        store._rebuild_routes()
+        assert store._stats["all"]["routes"] == 1
+        assert store._stats["all"]["engaged_m"] == 8_000
+        assert store._stats["reference_time"] == 1_000_000.0
+
+
+class TestSetDriveStats:
+    def test_persists_and_recomputes(self, tmp_path):
+        store = RouteStore(str(tmp_path))
+        lid = "00000001--aaaa"
+        store._raw = {lid: {"segments": [{"number": 0, "path": str(tmp_path)},
+                                         {"number": 1, "path": str(tmp_path)}]}}
+        store._metadata = {lid: {"route_id": lid, "dongle_id": "d",
+                                 "gps_time": 1_000_000.0, "gps_coordinates": [1.0, 2.0],
+                                 "total_distance_m": 10_000}}
+        store.set_drive_stats(lid, {"distance_m": 10_000, "duration_s": 600,
+                                    "engaged_m": 8_000, "engaged_s": 480})
+        assert store._metadata[lid]["drive_stats"]["engaged_m"] == 8_000
+        assert store._stats["all"]["engaged_m"] == 8_000
+        # persisted to disk
+        on_disk = json.loads((tmp_path / ".route_metadata.json").read_text())
+        assert on_disk["routes"][lid]["drive_stats"]["distance_m"] == 10_000
+
+
+class TestDriveStatsEndpoint:
+    async def _call(self, handler, store, route_name, body):
+        from unittest.mock import MagicMock
+        req = MagicMock()
+        req.app = {"store": store}
+        req.match_info = {"routeName": route_name}
+        async def _json():
+            return body
+        req.json = _json
+        return await handler(req)
+
+    def test_post_updates_stats_then_get_serves_cache(self, tmp_path):
+        import asyncio
+        from handlers.routes import handle_route_drive_stats
+        from handlers.auth import handle_device_stats
+        store = RouteStore(str(tmp_path))
+        lid = "00000001--aaaa"
+        store._raw = {lid: {"segments": [{"number": 0, "path": str(tmp_path)},
+                                         {"number": 1, "path": str(tmp_path)}]}}
+        store._metadata = {lid: {"route_id": lid, "dongle_id": "d",
+                                 "gps_time": 1_000_000.0, "gps_coordinates": [1.0, 2.0],
+                                 "total_distance_m": 10_000}}
+        store._rebuild_routes()
+        # mock get_local_id so _resolve_local_id finds the route
+        store.get_local_id = lambda name: lid if name == lid else None
+
+        resp = asyncio.run(self._call(handle_route_drive_stats, store, lid,
+            {"distance_m": 10_000, "duration_s": 600, "engaged_m": 8_000, "engaged_s": 480}))
+        assert resp.status == 200
+
+        # GET serves the cached aggregate with NO wall clock
+        get_req_store = store
+        import handlers.auth as auth_mod
+        from unittest.mock import MagicMock
+        greq = MagicMock()
+        greq.app = {"store": store}
+        greq.match_info = {"dongleId": "d"}
+        with patch("handlers.auth.time.time", return_value=0.0):
+            gresp = asyncio.run(handle_device_stats(greq))
+        payload = json.loads(gresp.body.decode())
+        assert payload["all"]["engaged_m"] == 8_000
+        assert payload["week"]["engaged_m"] == 8_000
+
+
+class TestHybridGpsTime:
+    def test_set_drive_stats_with_gps_time_materializes(self, tmp_path):
+        store = RouteStore(str(tmp_path))
+        lid = "00000001--aaaa"
+        store._raw = {lid: {"segments": [{"number": 0, "path": str(tmp_path)},
+                                         {"number": 1, "path": str(tmp_path)}]}}
+        store._metadata = {}
+        # No prior gps_time anywhere; device supplies it in the POST.
+        store.set_drive_stats(lid, {"distance_m": 10_000, "duration_s": 600,
+                                    "engaged_m": 8_000, "engaged_s": 480},
+                              gps_time=1_000_000.0)
+        assert store._metadata[lid]["gps_time"] == 1_000_000.0
+        assert store._stats["all"]["routes"] == 1
+        assert store._stats["all"]["engaged_m"] == 8_000
+        assert store._stats["reference_time"] == 1_000_000.0
+
+    def test_set_drive_stats_without_gps_time_stores_record(self, tmp_path):
+        store = RouteStore(str(tmp_path))
+        lid = "00000001--aaaa"
+        store._raw = {lid: {"segments": [{"number": 0, "path": str(tmp_path)}]}}
+        store._metadata = {}
+        store.set_drive_stats(lid, {"distance_m": 1, "duration_s": 1,
+                                    "engaged_m": 1, "engaged_s": 1})
+        # Record persisted; route not yet in aggregate (no gps_time -> filtered).
+        assert store._metadata[lid]["drive_stats"]["distance_m"] == 1.0
+        assert "gps_time" not in store._metadata[lid]
+
+    def test_enrich_fallback_fills_gps_and_preserves_drive_stats(self, tmp_path, monkeypatch):
+        store = RouteStore(str(tmp_path))
+        lid = "00000001--aaaa"
+        store._raw = {lid: {"segments": [{"number": 0, "path": str(tmp_path)},
+                                         {"number": 1, "path": str(tmp_path)}]}}
+        # Bare drive_stats entry (device had no GPS lock -> no gps_time).
+        store._metadata = {lid: {"route_id": lid,
+                                 "drive_stats": {"distance_m": 5_000, "duration_s": 300,
+                                                 "engaged_m": 4_000, "engaged_s": 240}}}
+        # Fallback parse yields GPS time from the qlog.
+        monkeypatch.setattr("route_store.RouteStore._find_qlog",
+                            staticmethod(lambda p: "fake.zst"))
+        monkeypatch.setattr("route_store._parse_log_metadata",
+                            lambda p: {"gps_time": 1_000_000.0, "start_lat": 1.0,
+                                       "start_lng": 2.0, "dongle_id": "d"})
+        store.enrich_new_routes()
+        assert store._metadata[lid]["gps_time"] == 1_000_000.0
+        assert store._metadata[lid]["drive_stats"]["engaged_m"] == 4_000  # preserved
+        assert store._stats["all"]["routes"] == 1
+
+    def test_enrich_fallback_marks_attempted_when_no_gps(self, tmp_path, monkeypatch):
+        store = RouteStore(str(tmp_path))
+        lid = "00000001--aaaa"
+        store._raw = {lid: {"segments": [{"number": 0, "path": str(tmp_path)},
+                                         {"number": 1, "path": str(tmp_path)}]}}
+        store._metadata = {lid: {"route_id": lid,
+                                 "drive_stats": {"distance_m": 5_000, "duration_s": 300,
+                                                 "engaged_m": 4_000, "engaged_s": 240}}}
+        monkeypatch.setattr("route_store.RouteStore._find_qlog",
+                            staticmethod(lambda p: "fake.zst"))
+        # Parse finds coords but no gps_time (never got a fix).
+        monkeypatch.setattr("route_store._parse_log_metadata",
+                            lambda p: {"start_lat": 1.0, "start_lng": 2.0, "dongle_id": "d"})
+        monkeypatch.setattr("route_store._find_first_gps_time", lambda p: None)
+        monkeypatch.setattr("route_store._find_first_gps", lambda p: (1.0, 2.0))
+        assert store.enrich_new_routes() >= 0
+        assert store._metadata[lid].get("gps_enrich_attempted") is True
+        # Second pass must skip it (no churn).
+        calls = []
+        orig = __import__("route_store")._parse_log_metadata
+        monkeypatch.setattr("route_store._parse_log_metadata",
+                            lambda p: (calls.append(p), {"start_lat": 1.0})[1])
+        store.enrich_new_routes()
+        assert calls == []
+
+    def test_ensure_enriched_preserves_drive_stats(self, tmp_path, monkeypatch):
+        store = RouteStore(str(tmp_path))
+        lid = "00000001--aaaa"
+        store._raw = {lid: {"segments": [{"number": 0, "path": str(tmp_path)},
+                                         {"number": 1, "path": str(tmp_path)}]}}
+        # Bare drive_stats-only entry (posted by device, not yet GPS-enriched).
+        store._metadata = {lid: {"route_id": lid,
+                                 "drive_stats": {"distance_m": 5_000, "duration_s": 300,
+                                                 "engaged_m": 4_000, "engaged_s": 240}}}
+        monkeypatch.setattr("route_store.RouteStore._is_onroad",
+                            staticmethod(lambda: False))
+        monkeypatch.setattr("route_store.RouteStore._enrich_one",
+                            lambda self, lid, segs: {"gps_time": 1_000_000.0,
+                                                     "start_lat": 1.0, "start_lng": 2.0,
+                                                     "dongle_id": "d"})
+        assert store.ensure_enriched(lid) is True
+        assert store._metadata[lid]["gps_time"] == 1_000_000.0
+        assert store._metadata[lid]["drive_stats"]["engaged_m"] == 4_000  # preserved
+        assert store._stats["all"]["total_m_with_engagement"] == 5_000

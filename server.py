@@ -75,6 +75,7 @@ from handlers import (
     handle_route_get,
     handle_route_manifest,
     handle_route_note,
+    handle_route_drive_stats,
     handle_route_bookmark_add,
     handle_route_bookmark_update,
     handle_route_bookmark_delete,
@@ -225,6 +226,7 @@ def create_app(data_dir: str, static_dir: str) -> web.Application:
     app.router.add_get("/v1/route/{routeName}/manifest.m3u8", handle_route_manifest)
     app.router.add_get("/v1/route/{routeName}/share_signature", handle_share_signature)
     app.router.add_post("/v1/route/{routeName}/note", handle_route_note)
+    app.router.add_post("/v1/route/{routeName}/drive_stats", handle_route_drive_stats)
     app.router.add_post("/v1/route/{routeName}/bookmark", handle_route_bookmark_add)
     app.router.add_put("/v1/route/{routeName}/bookmark/{index}", handle_route_bookmark_update)
     app.router.add_delete("/v1/route/{routeName}/bookmark/{index}", handle_route_bookmark_delete)

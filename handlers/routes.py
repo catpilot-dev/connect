@@ -413,6 +413,33 @@ async def handle_route_note(request: web.Request) -> web.Response:
     return web.json_response({"status": "ok"})
 
 
+async def handle_route_drive_stats(request: web.Request) -> web.Response:
+    """POST /v1/route/{routeName}/drive_stats — store brief per-drive stats
+    (distance_m, duration_s, engaged_m, engaged_s) computed on-device at offroad.
+    """
+    store = request.app["store"]
+    local_id = _resolve_local_id(store, request)
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid json"}, status=400)
+    required = ("distance_m", "duration_s", "engaged_m", "engaged_s")
+    if not all(k in body for k in required):
+        return web.json_response({"error": f"missing fields; require {required}"}, status=400)
+    try:
+        stats = {k: float(body[k]) for k in required}
+    except (TypeError, ValueError):
+        return web.json_response({"error": "fields must be numbers"}, status=400)
+    gps_time = body.get("gps_time")
+    if gps_time is not None:
+        try:
+            gps_time = float(gps_time)
+        except (TypeError, ValueError):
+            return web.json_response({"error": "gps_time must be a number"}, status=400)
+    store.set_drive_stats(local_id, stats, gps_time=gps_time)
+    return web.json_response({"status": "ok"})
+
+
 async def handle_route_bookmark_add(request: web.Request) -> web.Response:
     """POST /v1/route/{routeName}/bookmark — add a bookmark"""
     store = request.app["store"]
