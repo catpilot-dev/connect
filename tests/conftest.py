@@ -11,6 +11,24 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
+# ─── Param isolation ────────────────────────────────────────────────
+
+@pytest.fixture(autouse=True)
+def isolate_params(tmp_path, monkeypatch):
+    """Redirect openpilot param IO to a temp dir for every test.
+
+    PARAMS_DIR defaults to /data/params/d, which is real on a C3. Handlers like
+    reboot/poweroff/uninstall work by writing DoReboot/DoUninstall there, so
+    without this a test run on the device would actually reboot it.
+    read_param/write_param resolve the module global at call time, so patching
+    it here covers every caller.
+    """
+    params = tmp_path / "params"
+    params.mkdir()
+    monkeypatch.setattr("handler_helpers.PARAMS_DIR", str(params))
+    return params
+
+
 # ─── Fake route data on disk ────────────────────────────────────────
 
 @pytest.fixture

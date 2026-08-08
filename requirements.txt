@@ -1,0 +1,56 @@
+# COD (connect-on-device) Python dependencies
+# ---------------------------------------------------------------------------
+# COD historically free-rode the openpilot venv (/usr/local/venv). openpilot
+# removed aiohttp entirely in #38226 (webrtc → stdlib http.server), dropping it
+# from pyproject.toml + uv.lock, so from openpilot v0.11.2 on the venv no longer
+# provides it and COD (an aiohttp.web app: server.py + all handlers + the
+# aiohttp.ClientSession client in updates.py) would fail to import.
+#
+# Install into the openpilot venv at deploy (setup_service.sh), read-only rootfs:
+#   sudo mount -o remount,rw /
+#   /usr/local/venv/bin/pip install -r requirements.txt
+#   sudo mount -o remount,ro /
+#
+# aiohttp + its EXCLUSIVE transitive deps are listed. They were removed
+# from openpilot's lock alongside aiohttp, so installing them cannot conflict
+# with any remaining openpilot dependency. Do NOT add numpy/attrs/idna here —
+# numpy is an openpilot core dep (reinstalling risks clobbering openpilot's
+# pinned version); attrs/idna (aiohttp's other deps) remain in the venv via
+# other openpilot packages and are already satisfied.
+#
+# Versions pinned to openpilot's last-locked coherent set (the resolution for
+# aiohttp 3.13.5) — tested on AGNOS aarch64 / CPython 3.12; all ship cp312
+# aarch64 manylinux wheels, so no on-device compilation. Bump deliberately.
+#
+# TWO PINNING STYLES, deliberately:
+#   ==  for packages COD exclusively owns (aiohttp + its transitives). Nothing
+#       else in the venv depends on them, so an exact pin cannot conflict.
+#   >=  for packages SHARED with an AGNOS dependency (pillow). An exact pin
+#       would DOWNGRADE a newer version that the sharing package requires; a
+#       floor guarantees presence without fighting AGNOS's resolution.
+
+aiohttp==3.13.5
+
+# aiohttp transitive deps (exclusive to aiohttp; removed from openpilot's lock)
+aiohappyeyeballs==2.6.2
+aiosignal==1.4.0
+frozenlist==1.8.0
+multidict==6.7.1
+propcache==0.5.2
+yarl==1.24.2
+
+# Safety net (2026-08-06). COD uses PIL in render_clip_headless.py (frombytes/
+# resize/JPEG encode) and handlers/media.py (Image.open, EXIF IFD/GPS tags).
+# openpilot dropped pillow as a direct dep (#38320/#38466), so as of AGNOS 19.4
+# pillow reaches the venv through exactly ONE thread: matplotlib, which AGNOS
+# lists as an "extra nice-to-have" in agnos-builder/userspace/uv/pyproject.toml.
+# It is present today (12.3.0) and this line is a no-op — but if comma ever
+# drops matplotlib from that list, pillow disappears and COD breaks. Floor, not
+# an exact pin, so it never downgrades the version matplotlib resolved to.
+# 12.3.0 ships a cp312 aarch64 manylinux wheel (no on-device compilation).
+pillow>=12.3.0
+
+# Provided by the openpilot venv, NOT installed here (listed for documentation):
+#   numpy      — openpilot core dep (log_parser / render_clip use it)
+#   attrs      — aiohttp dep, satisfied by other openpilot packages
+#   idna       — aiohttp dep, satisfied by other openpilot packages
