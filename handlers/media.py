@@ -14,7 +14,7 @@ from pathlib import Path
 from aiohttp import web
 
 from handler_helpers import get_route_or_404, parse_json
-from rlog_parser import _generate_coords_json
+from log_parser import _generate_coords_json
 from route_helpers import _resolve_local_id
 
 from config import FFMPEG_BIN

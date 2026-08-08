@@ -1,4 +1,4 @@
-"""Signal browser handlers — catalog and data extraction from rlogs."""
+"""Signal browser handlers — catalog and data extraction from logs."""
 
 import asyncio
 import logging
@@ -6,7 +6,7 @@ import logging
 from aiohttp import web
 
 from handler_helpers import error_response, resolve_route_name
-from rlog_parser import extract_signal_catalog, extract_signal_data, extract_all_signals
+from log_parser import extract_signal_catalog, extract_signal_data, extract_all_signals
 
 logger = logging.getLogger("connect.signals")
 

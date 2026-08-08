@@ -6,5 +6,8 @@ node_modules/
 frontend/node_modules/
 frontend/.svelte-kit/
 static/
+# Generated raylib artifacts — the build script and patch beside them are tracked
+build/raylib/
+build/*.tar.gz
 test_overlay.png
 reference/

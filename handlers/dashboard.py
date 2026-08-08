@@ -9,7 +9,7 @@ from pathlib import Path
 from aiohttp import web
 
 from handler_helpers import error_response, resolve_route_name
-from rlog_parser import extract_dashboard_telemetry
+from log_parser import extract_dashboard_telemetry
 
 logger = logging.getLogger("connect.dashboard")
 
