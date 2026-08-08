@@ -20,6 +20,7 @@ from aiohttp import web
 from health import run_startup_checks, run_periodic_checks, get_health_status
 from handlers import (
     cors_middleware,
+    onroad_guard_middleware,
     handle_auth,
     handle_connectdata,
     handle_dashboard_telemetry,
@@ -188,7 +189,7 @@ async def _shutdown(app: web.Application):
 # ─── App factory ──────────────────────────────────────────────────────
 
 def create_app(data_dir: str, static_dir: str) -> web.Application:
-    app = web.Application(middlewares=[cors_middleware])
+    app = web.Application(middlewares=[cors_middleware, onroad_guard_middleware])
 
     store = RouteStore(data_dir)
     app["store"] = store

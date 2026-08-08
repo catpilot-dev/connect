@@ -542,3 +542,60 @@ class TestShareSignature:
         data = await resp.json()
         assert data["exp"] == "9999999999"
         assert data["sig"] == "local"
+
+
+# ─── Onroad safety guard ─────────────────────────────────────────────
+
+class TestOnroadGuard:
+    """COD must never affect a moving car.
+
+    The UI hides these controls while driving, but that check cannot be relied
+    on — a page opened while parked goes stale, and the API is reachable
+    directly — so the middleware enforces it server-side.
+    """
+
+    BLOCKED = [
+        ("post", "/v1/device/reboot"),
+        ("post", "/v1/device/poweroff"),
+        ("post", "/v1/updates/apply"),
+        ("post", "/v1/software/install"),
+        ("post", "/v1/software/branch"),
+        ("post", "/v1/software/uninstall"),
+        ("post", "/v1/models/swap"),
+        ("post", "/v1/plugins/phone_gps/toggle"),
+        ("post", "/v1/screencast/start"),
+    ]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method,path", BLOCKED)
+    async def test_refused_while_onroad(self, client, method, path):
+        c = await client
+        with patch("handlers.middleware.read_param", return_value="1"):
+            resp = await getattr(c, method)(path, json={})
+        assert resp.status == 409, f"{path} was not refused while onroad"
+        data = await resp.json()
+        assert data["isOnroad"] is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method,path", BLOCKED)
+    async def test_reaches_handler_while_offroad(self, client, method, path):
+        """Offroad the guard must be transparent — any status but 409."""
+        c = await client
+        with patch("handlers.middleware.read_param", return_value="0"):
+            resp = await getattr(c, method)(path, json={})
+        assert resp.status != 409, f"{path} was refused while offroad"
+
+    @pytest.mark.asyncio
+    async def test_reads_are_never_blocked(self, client):
+        c = await client
+        with patch("handlers.middleware.read_param", return_value="1"):
+            resp = await c.get("/v1/storage")
+        assert resp.status == 200
+
+    @pytest.mark.asyncio
+    async def test_route_management_still_allowed_onroad(self, client):
+        """Route data is not the car — deleting a bookmark must still work."""
+        c = await client
+        with patch("handlers.middleware.read_param", return_value="1"):
+            resp = await c.delete("/v1/route/nonexistent--route/bookmark/0")
+        assert resp.status != 409

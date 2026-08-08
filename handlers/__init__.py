@@ -1,6 +1,6 @@
 """handlers package — re-exports all handler functions for server.py compatibility."""
 
-from .middleware import cors_middleware
+from .middleware import cors_middleware, onroad_guard_middleware
 
 from .auth import (
     handle_me,
