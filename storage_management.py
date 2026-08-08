@@ -152,6 +152,9 @@ def run_cleanup(store) -> dict:
     # ── HUD render cache: cap at 500MB, delete oldest MP4s ────────────
     _cleanup_hud_cache(COD_HUD_CACHE_DIR)
 
+    # ── General cache: cap MP4 muxes at 500MB, delete oldest ──────────
+    _cleanup_media_cache(COD_CACHE_DIR)
+
     if deleted:
         store._save_metadata()
 
@@ -160,6 +163,7 @@ def run_cleanup(store) -> dict:
 
 SCREENSHOT_MAX_BYTES = 500 * 1024 * 1024  # 500 MB cap for screenshots
 HUD_CACHE_MAX_BYTES = 500 * 1024 * 1024   # 500 MB cap for HUD renders
+MEDIA_CACHE_MAX_BYTES = 500 * 1024 * 1024 # 500 MB cap for MP4 muxes in general cache
 
 
 def _cleanup_hud_cache(hud_cache_dir: str):
@@ -237,6 +241,41 @@ def _cleanup_screenshots(screenshots_dir: str):
             os.remove(path)
             total -= size
             logger.info("Cleanup: deleted screenshot %s", os.path.basename(path))
+        except OSError:
+            pass
+
+
+def _cleanup_media_cache(cache_dir: str):
+    """Delete oldest MP4 muxes in the general cache when total size exceeds cap.
+    Only targets .mp4 files directly in cache_dir (not subdirectories like qcamera_hls/)."""
+    if not os.path.isdir(cache_dir):
+        return
+    mp4s = []
+    total = 0
+    for name in os.listdir(cache_dir):
+        if not name.endswith('.mp4'):
+            continue
+        path = os.path.join(cache_dir, name)
+        if not os.path.isfile(path):
+            continue
+        try:
+            stat = os.stat(path)
+            mp4s.append((stat.st_mtime, path, stat.st_size))
+            total += stat.st_size
+        except OSError:
+            continue
+
+    if total <= MEDIA_CACHE_MAX_BYTES:
+        return
+
+    mp4s.sort()  # oldest first
+    for mtime, path, size in mp4s:
+        if total <= MEDIA_CACHE_MAX_BYTES:
+            break
+        try:
+            os.unlink(path)
+            total -= size
+            logger.info("Media cache cleanup: deleted %s (%.1fMB)", os.path.basename(path), size / 1024 / 1024)
         except OSError:
             pass
 

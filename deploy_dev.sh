@@ -3,7 +3,7 @@
 # Usage: ./deploy_dev.sh [host]
 set -e
 
-HOST="${1:-comma@10.0.0.160}"
+HOST="${1:-c3}"
 REMOTE_DIR="/data/connect-on-device"
 LOCAL_DIR="$(cd "$(dirname "$0")" && pwd)"
 
