@@ -9,6 +9,7 @@
   let map = null
   let L = null
   let gridLayers = []
+  let resizeObserver = null
   const tileConfig = TILE_SOURCES[getTileSource()] || TILE_SOURCES.amap
 
   // State
@@ -93,11 +94,13 @@
     updateGrid()
   }
 
+  const TILE_WEIGHT = 1
+
   function tileStyle(lat, lon) {
-    if (isSelectedForDelete(lat, lon)) return { color: '#ef4444', weight: 3, fillOpacity: 0.2 }
-    if (isDownloaded(lat, lon)) return { color: '#22c55e', weight: 3, fillOpacity: 0.01 }
-    if (isSelected(lat, lon)) return { color: '#3b82f6', weight: 3, fillOpacity: 0.01 }
-    return { color: '#3a4254', weight: 1, fillOpacity: 0.01 }
+    if (isSelectedForDelete(lat, lon)) return { color: '#ef4444', weight: TILE_WEIGHT, fillOpacity: 0.28 }
+    if (isDownloaded(lat, lon)) return { color: '#22c55e', weight: TILE_WEIGHT, fillOpacity: 0.14 }
+    if (isSelected(lat, lon)) return { color: '#3b82f6', weight: TILE_WEIGHT, fillOpacity: 0.20 }
+    return { color: '#3a4254', weight: TILE_WEIGHT, fillOpacity: 0.01 }
   }
 
   function highlightTileOnMap(lat, lon) {
@@ -105,7 +108,7 @@
     const key = tileKey(lat, lon)
     const layer = gridLayerMap[key]
     if (layer) {
-      layer.setStyle({ color: '#ef4444', weight: 3, fillColor: '#ef4444', fillOpacity: 0.25 })
+      layer.setStyle({ color: '#ef4444', weight: TILE_WEIGHT, fillColor: '#ef4444', fillOpacity: 0.35 })
       layer.bringToFront()
     }
   }
@@ -195,6 +198,29 @@
     }
   }
 
+  // Re-downloading every tile is a large transfer, so state the size and make
+  // the user confirm or abort rather than firing on a single click.
+  let confirmRefresh = $state(false)
+
+  function armRefresh() {
+    if (downloaded.length === 0 || progress.active) return
+    confirmRefresh = true
+  }
+
+  async function refreshDownloaded() {
+    confirmRefresh = false
+    if (downloaded.length === 0 || progress.active) return
+    error = null
+    try {
+      // download_tile always fetches and overwrites, so this repairs stale or
+      // corrupt tiles in place — no need to delete them first.
+      await startTileDownload(downloaded.map(t => ({ lat: t.lat, lon: t.lon })))
+      startPolling()
+    } catch (e) {
+      error = e.message
+    }
+  }
+
   async function cancelDownload() {
     try {
       await cancelTileDownload()
@@ -275,6 +301,12 @@
       className: tileConfig.className || undefined,
     }).addTo(map)
 
+    // Leaflet measures its container once, at init, but the surrounding flex
+    // layout settles afterwards. Observe the container instead of guessing at
+    // delays, so the map re-measures whenever it actually gets a size.
+    resizeObserver = new ResizeObserver(() => map?.invalidateSize())
+    resizeObserver.observe(mapContainer)
+
     try {
       const data = await fetchTileList()
       downloaded = data.tiles
@@ -292,6 +324,7 @@
   })
 
   onDestroy(() => {
+    resizeObserver?.disconnect()
     stopPolling()
     if (map) {
       map.remove()
@@ -343,17 +376,17 @@
   }
 </style>
 
-<div class="flex flex-col h-dvh overflow-hidden">
+<div class="flex flex-col flex-1 min-h-0">
   <!-- Map fills all available space -->
-  <div class="flex-1 min-h-0 px-2 sm:px-4 pt-2 sm:pt-4">
+  <div class="flex-1 min-h-0 flex flex-col px-2 sm:px-4 pt-2 sm:pt-4">
     <div
       bind:this={mapContainer}
-      class="w-full h-full rounded-lg overflow-hidden"
+      class="w-full flex-1 min-h-0 rounded-lg overflow-hidden"
     ></div>
   </div>
 
   <!-- Controls pinned to bottom -->
-  <div class="shrink-0 px-2 sm:px-4 py-2 space-y-2">
+  <div class="shrink-0 sticky bottom-0 z-[1000] bg-surface-900/95 backdrop-blur px-2 sm:px-4 py-2 space-y-2">
     {#if error}
       <div class="text-engage-red text-xs">{error}</div>
     {/if}
@@ -363,7 +396,7 @@
 
     {#if progress.active}
       <!-- Download progress -->
-      <div class="flex items-center gap-3">
+      <div class="flex items-center gap-3 min-h-[34px]">
         <div class="flex-1 min-w-0">
           <div class="flex items-center justify-between text-xs text-surface-300 mb-1">
             <span class="truncate">{currentTileLabel}</span>
@@ -383,8 +416,22 @@
       </div>
     {:else}
       <!-- Action bar -->
-      <div class="flex items-center gap-2">
-        {#if selectedForDelete.length > 0}
+      <div class="flex items-center gap-2 min-h-[34px]">
+        {#if confirmRefresh}
+          <div class="flex-1 flex items-center justify-center gap-2">
+            <span class="text-xs text-surface-200">
+              Re-download {downloaded.length} tile{downloaded.length === 1 ? '' : 's'} — {storage.total_mb} MB?
+            </span>
+            <button
+              class="px-3 py-1.5 text-xs rounded-lg bg-engage-blue text-white hover:bg-engage-blue/80 transition-colors"
+              onclick={refreshDownloaded}
+            >Confirm</button>
+            <button
+              class="px-2 py-1.5 text-xs text-surface-500 hover:text-surface-300 transition-colors"
+              onclick={() => confirmRefresh = false}
+            >Abort</button>
+          </div>
+        {:else if selectedForDelete.length > 0}
           <div class="flex-1 flex items-center justify-center gap-2">
             <button
               class="px-3 py-1.5 text-xs rounded-lg bg-engage-red/20 text-engage-red hover:bg-engage-red/30 transition-colors"
@@ -414,6 +461,16 @@
           <div class="flex-1 flex justify-center">
             <span class="text-sm text-surface-200 px-4 py-1.5 rounded-lg border border-dashed border-surface-500 animate-pulse-border">Click map to select tiles</span>
           </div>
+        {/if}
+
+        {#if downloaded.length > 0 && !confirmRefresh}
+          <button
+            class="shrink-0 px-3 py-1.5 text-xs rounded-lg bg-engage-blue text-white hover:bg-engage-blue/80 transition-colors"
+            onclick={armRefresh}
+            title="Re-download all {downloaded.length} tiles ({storage.total_mb} MB)"
+          >
+            Refresh
+          </button>
         {/if}
 
       </div>

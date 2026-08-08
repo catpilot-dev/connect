@@ -176,6 +176,12 @@
     history.pushState(null, '', '/routes')
   }
 
+  function showTiles() {
+    page = 'tiles'
+    selectedRoute.set(null)
+    history.pushState(null, '', '/tiles')
+  }
+
   function showSettings() {
     page = 'settings'
     selectedRoute.set(null)
@@ -212,8 +218,6 @@
 
 {#if page === 'signals'}
   <SignalBrowserPage />
-{:else if page === 'tiles'}
-  <TileManager />
 <!-- Dashboard disabled for now
 {:else if isOnroad && page === 'dashboard'}
   <DashboardPage {isOnroad} />
@@ -237,6 +241,12 @@
             Dashboard
           </button>
           -->
+          <button
+            class="px-3 py-1.5 text-sm rounded transition-colors {page === 'tiles' ? 'bg-surface-700 text-surface-50' : 'text-surface-400 hover:text-surface-200'}"
+            onclick={showTiles}
+          >
+            Map Tiles
+          </button>
           <button
             class="px-3 py-1.5 text-sm rounded transition-colors {page === 'settings' ? 'bg-surface-700 text-surface-50' : 'text-surface-400 hover:text-surface-200'}"
             onclick={showSettings}
@@ -276,6 +286,8 @@
         </div>
       <!-- {:else if page === 'dashboard'}
         <DashboardPage {isOnroad} /> -->
+      {:else if page === 'tiles'}
+        <TileManager />
       {:else if page === 'settings'}
         <SettingsPage {isOnroad} />
       {:else if page === 'plugins'}

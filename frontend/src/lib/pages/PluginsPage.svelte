@@ -4,6 +4,13 @@
   import Spinner from '../components/Spinner.svelte'
   import ModelPanel from '../components/ModelPanel.svelte'
   import MapdPanel from '../components/MapdPanel.svelte'
+
+  // Panels COD ships itself, which stay reachable regardless of the plugin's
+  // own `panel` flag or enabled state. mapd's panel is really offline tile file
+  // management — downloading and deleting OSM data that speedlimitd reads
+  // directly — so it must not depend on the mapd process running. mapd is
+  // currently disabled for stability; see pfeiferj/mapd#88.
+  const ALWAYS_AVAILABLE_PANEL = new Set(['mapd'])
   import ChevronIcon from '../components/ChevronIcon.svelte'
   import { fetchPlugins, togglePlugin, setPluginParam, deviceReboot, fetchPluginRepo, setPluginRepo, installPluginRepo } from '../api.js'
 
@@ -263,7 +270,7 @@
                   <span class="text-[10px] px-1.5 py-0.5 rounded {proc.running ? 'bg-engage-green/15 text-engage-green' : 'bg-surface-700 text-surface-400'}">{proc.running ? 'running' : 'stopped'}</span>
                 {/each}
               {/if}
-              {#if (plugin.panel || plugin.settings?.length) && plugin.enabled}
+              {#if ((plugin.panel || plugin.settings?.length) && plugin.enabled) || ALWAYS_AVAILABLE_PANEL.has(plugin.id)}
                 <ChevronIcon rotated={expandedPlugin === plugin.id} />
               {/if}
             </div>
@@ -291,7 +298,7 @@
           />
         </div>
 
-        {#if expandedPlugin === plugin.id && plugin.enabled}
+        {#if expandedPlugin === plugin.id && (plugin.enabled || ALWAYS_AVAILABLE_PANEL.has(plugin.id))}
           {#if plugin.id === 'model_selector' && plugin.panel}
             <div class="pt-4 border-t border-surface-700 mt-4">
               <ModelPanel />

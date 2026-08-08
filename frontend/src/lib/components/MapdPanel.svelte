@@ -107,7 +107,7 @@
     </div>
   </div>
   <div class="pt-3">
-    <button class="w-full flex items-center justify-between group" onclick={() => window.open('/tiles', 'tiles', 'width=720,height=500')}>
+    <button class="w-full flex items-center justify-between group" onclick={() => { window.location.href = '/tiles' }}>
       <div class="text-left">
         <div class="text-sm text-surface-100">Map Tiles Management</div>
         <div class="text-xs text-surface-500 mt-0.5">{#if tileStorage}{tileStorage.tile_count} tiles &middot; {tileStorage.total_mb} MB{:else}Download and manage OSM offline tiles{/if}</div>
