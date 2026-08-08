@@ -166,3 +166,13 @@ def sample_events_json():
             "data": {"state": "disabled", "enabled": False, "alertStatus": 0},
         },
     ]
+
+
+@pytest.fixture
+def sample_coords_json():
+    """List of (t_seconds, dist_meters) GPS samples for one segment."""
+    return [
+        {"t": 0.0,  "dist": 0.0,    "lat": 31.23, "lng": 121.47},
+        {"t": 30.0, "dist": 500.0,  "lat": 31.24, "lng": 121.48},
+        {"t": 60.0, "dist": 1000.0, "lat": 31.25, "lng": 121.49},
+    ]

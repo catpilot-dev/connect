@@ -9,7 +9,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from route_helpers import _base_url, _clean_route, _resolve_local_id, _route_bookmarks, _route_engagement, _route_timeline_summary, _set_route_url
+from route_helpers import _base_url, _clean_route, _resolve_local_id, _route_bookmarks, _route_engaged_distance, _route_timeline_summary, _set_route_url
 
 
 # ─── _clean_route ────────────────────────────────────────────────────
@@ -104,55 +104,126 @@ class TestResolveLocalId:
             break
 
 
-# ─── _route_engagement ───────────────────────────────────────────────
+# ─── _route_engaged_distance ─────────────────────────────────────────
 
-class TestRouteEngagement:
-    def test_no_events(self, mock_store):
-        route = {"_local_id": "00000042--abc123", "_segments": [], "maxqlog": 0}
-        engaged_ms, total_ms = _route_engagement(mock_store, route)
-        assert engaged_ms == 0
-        assert total_ms > 0
+class TestRouteEngagedDistance:
+    def _write_seg(self, seg_path: Path, coords: list, events: list):
+        seg_path.mkdir(parents=True, exist_ok=True)
+        (seg_path / "coords.json").write_text(json.dumps(coords))
+        (seg_path / "events.json").write_text(json.dumps(events))
 
-    def test_with_events(self, mock_store, sample_events_json):
-        # Write events.json to a segment dir
-        routes = mock_store.scan()
-        for r in routes.values():
-            if r["_local_id"] == "00000042--abc123" and r["_segments"]:
-                seg_path = Path(r["_segments"][0]["path"])
-                (seg_path / "events.json").write_text(json.dumps(sample_events_json))
-                engaged_ms, total_ms = _route_engagement(mock_store, r)
-                # Engagement: 10000ms to 40000ms = 30000ms
-                assert engaged_ms == 30000.0
-                assert total_ms > 0
-                break
+    def test_no_cache_returns_zero(self, mock_store, tmp_path):
+        # Segment dir exists but no coords.json or events.json
+        seg = tmp_path / "seg0"
+        seg.mkdir()
+        route = {"_segments": [{"path": str(seg), "number": 0}]}
+        engaged_m, total_m = _route_engaged_distance(mock_store, route)
+        assert engaged_m == 0.0
+        assert total_m == 0.0
 
-    def test_open_span_closes_at_segment_end(self, mock_store):
-        """Engagement that starts but doesn't end should close at segment end."""
+    def test_single_segment_engagement(self, mock_store, tmp_path, sample_coords_json):
+        seg = tmp_path / "seg0"
         events = [
-            {
-                "type": "state",
-                "time": 1700000010.0,
-                "offset_millis": 10000,
-                "route_offset_millis": 10000,
-                "data": {"state": "enabled", "enabled": True, "alertStatus": 0},
-            },
-            # No disengage event — should close at segment end (60000ms)
+            {"type": "state", "route_offset_millis": 10_000, "data": {"enabled": True}},
+            {"type": "state", "route_offset_millis": 50_000, "data": {"enabled": False}},
         ]
-        routes = mock_store.scan()
-        for r in routes.values():
-            if r["_local_id"] == "00000042--abc123" and r["_segments"]:
-                seg_path = Path(r["_segments"][0]["path"])
-                (seg_path / "events.json").write_text(json.dumps(events))
-                engaged_ms, total_ms = _route_engagement(mock_store, r)
-                # Segment 0 ends at 60000ms, engaged from 10000ms
-                assert engaged_ms == 50000.0
-                break
+        self._write_seg(seg, sample_coords_json, events)
+        route = {"_segments": [{"path": str(seg), "number": 0}]}
+        engaged_m, total_m = _route_engaged_distance(mock_store, route)
+        # interp(10_000) = 500 * (10/30) ≈ 166.67
+        # interp(50_000) = 500 + 500 * (20/30) ≈ 833.33
+        assert engaged_m == pytest.approx(666.67, abs=0.01)
+        assert total_m == 1000.0
 
-    def test_no_local_id_returns_zeros(self, mock_store):
-        route = {"maxqlog": 5, "_segments": []}
-        engaged_ms, total_ms = _route_engagement(mock_store, route)
-        assert engaged_ms == 0
-        assert total_ms == 0
+    def test_multi_segment_engagement(self, mock_store, tmp_path):
+        seg0 = tmp_path / "seg0"
+        seg1 = tmp_path / "seg1"
+        coords0 = [
+            {"t": 0.0,  "dist": 0.0},
+            {"t": 60.0, "dist": 1000.0},
+        ]
+        coords1 = [
+            {"t": 60.0,  "dist": 0.0},
+            {"t": 120.0, "dist": 800.0},
+        ]
+        events0 = [
+            {"type": "state", "route_offset_millis": 40_000, "data": {"enabled": True}},
+        ]
+        events1 = [
+            {"type": "state", "route_offset_millis": 80_000, "data": {"enabled": False}},
+        ]
+        self._write_seg(seg0, coords0, events0)
+        self._write_seg(seg1, coords1, events1)
+        route = {"_segments": [
+            {"path": str(seg0), "number": 0},
+            {"path": str(seg1), "number": 1},
+        ]}
+        engaged_m, total_m = _route_engaged_distance(mock_store, route)
+        # cum_m at t=40_000 ≈ 666.67 (seg0); cum_m at t=80_000 ≈ 1000+800*(20/60) ≈ 1266.67
+        assert engaged_m == pytest.approx(600.0, abs=0.01)
+        assert total_m == 1800.0
+
+    def test_open_engagement_closes_at_route_end(self, mock_store, tmp_path):
+        seg = tmp_path / "seg0"
+        coords = [
+            {"t": 0.0,  "dist": 0.0},
+            {"t": 60.0, "dist": 1000.0},
+        ]
+        events = [
+            {"type": "state", "route_offset_millis": 30_000, "data": {"enabled": True}},
+            # No falling edge — closes at t_ms[-1]=60_000
+        ]
+        self._write_seg(seg, coords, events)
+        route = {"_segments": [{"path": str(seg), "number": 0}]}
+        engaged_m, total_m = _route_engaged_distance(mock_store, route)
+        assert engaged_m == pytest.approx(500.0, abs=0.01)
+        assert total_m == 1000.0
+
+    def test_stationary_while_engaged_yields_zero(self, mock_store, tmp_path):
+        """Idle/stationary time with system engaged contributes zero meters (distance, not time)."""
+        seg = tmp_path / "seg0"
+        coords = [
+            {"t": 0.0,  "dist": 0.0},
+            {"t": 20.0, "dist": 100.0},
+            {"t": 40.0, "dist": 100.0},  # stationary
+            {"t": 60.0, "dist": 200.0},
+        ]
+        events = [
+            {"type": "state", "route_offset_millis": 25_000, "data": {"enabled": True}},
+            {"type": "state", "route_offset_millis": 35_000, "data": {"enabled": False}},
+        ]
+        self._write_seg(seg, coords, events)
+        route = {"_segments": [{"path": str(seg), "number": 0}]}
+        engaged_m, total_m = _route_engaged_distance(mock_store, route)
+        assert engaged_m == 0.0
+        assert total_m == 200.0
+
+    def test_no_segments_returns_zero(self, mock_store):
+        route = {"_segments": []}
+        engaged_m, total_m = _route_engaged_distance(mock_store, route)
+        assert engaged_m == 0.0
+        assert total_m == 0.0
+
+    def test_missing_events_returns_zero(self, mock_store, tmp_path, sample_coords_json):
+        """Coords cached but events.json missing -> bail."""
+        seg = tmp_path / "seg0"
+        seg.mkdir()
+        (seg / "coords.json").write_text(json.dumps(sample_coords_json))
+        route = {"_segments": [{"path": str(seg), "number": 0}]}
+        engaged_m, total_m = _route_engaged_distance(mock_store, route)
+        assert engaged_m == 0.0
+        assert total_m == 0.0
+
+    def test_corrupt_events_returns_zero(self, mock_store, tmp_path, sample_coords_json):
+        """Corrupt events.json (unparseable) is treated the same as missing — (0, 0)."""
+        seg = tmp_path / "seg0"
+        seg.mkdir()
+        (seg / "coords.json").write_text(json.dumps(sample_coords_json))
+        (seg / "events.json").write_text("{ not valid json")
+        route = {"_segments": [{"path": str(seg), "number": 0}]}
+        engaged_m, total_m = _route_engaged_distance(mock_store, route)
+        assert engaged_m == 0.0
+        assert total_m == 0.0
 
 
 # ─── _route_bookmarks ───────────────────────────────────────────────

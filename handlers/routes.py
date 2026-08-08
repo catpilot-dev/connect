@@ -9,7 +9,7 @@ from aiohttp import web
 
 from handler_helpers import get_route_or_404
 from log_parser import _generate_coords_json, _generate_events_json
-from route_helpers import _base_url, _clean_route, _resolve_local_id, _route_bookmarks, _route_engagement, _route_timeline_summary, _set_route_url
+from route_helpers import _base_url, _clean_route, _resolve_local_id, _route_bookmarks, _route_engaged_distance, _route_timeline_summary, _set_route_url
 from route_store import _route_counter
 from storage_management import DOWNLOAD_FILES, build_download_tar
 
@@ -222,16 +222,24 @@ async def handle_route_get(request: web.Request) -> web.Response:
         for i in range(max_seg + 1)
     )
 
-    # Opportunistic: compute engagement % if events/coords are cached
-    # but metadata is missing the value (e.g. after re-enrichment completed)
+    # Opportunistic: compute distance-based engagement % if coords + events are
+    # cached. Migration: legacy time-based values (no engagement_metric_version)
+    # are recomputed. Version is stamped even when no GPS is available so that
+    # routes without coords don't re-trigger compute on every view. When migrating
+    # without coords, clear the stale time-based pct so the API hides the value.
     if events_cached and meta:
-        if meta.get("engagement_pct") is None:
-            engaged_ms, total_ms = _route_engagement(store, route)
-            if total_ms > 0 and engaged_ms > 0:
-                meta["engagement_pct"] = round(engaged_ms / total_ms * 100)
-                store._rebuild_routes()
-                store._save_metadata()
-                route = store.get_route(route_name)
+        is_legacy = meta.get("engagement_metric_version") != 2
+        needs_compute = is_legacy or meta.get("engagement_pct") is None
+        if needs_compute:
+            engaged_m, total_m = _route_engaged_distance(store, route)
+            if total_m > 0:
+                meta["engagement_pct"] = round(engaged_m / total_m * 100)
+            elif is_legacy:
+                meta["engagement_pct"] = None
+            meta["engagement_metric_version"] = 2
+            store._rebuild_routes()
+            store._save_metadata()
+            route = store.get_route(route_name)
 
         # Geocode in background — don't block the response (Nominatim rate limit = 2+ sec)
         needs_geocode = meta.get("start_address") is None or meta.get("end_address") is None

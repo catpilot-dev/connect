@@ -5,6 +5,7 @@ No internal imports — only uses stdlib + aiohttp.
 """
 
 import json
+from bisect import bisect_left
 from pathlib import Path
 
 from aiohttp import web
@@ -44,44 +45,85 @@ def _resolve_local_id(store, request: web.Request) -> str:
     return local_id
 
 
-def _route_engagement(store, route: dict) -> tuple[float, float]:
-    """Compute engaged_ms and total_ms for a route from cached events.json files.
+def _route_engaged_distance(store, route: dict) -> tuple[float, float]:
+    """Compute engaged_m and total_m for a route by integrating GPS distance
+    across engagement intervals.
 
-    Returns (engaged_ms, total_duration_ms). Uses cached events.json files
-    (generated when a route is viewed in the UI). Returns (0, 0) if no cache.
+    Walks each segment's coords.json + events.json once, building route-wide
+    (t_ms, cum_m) arrays and collecting raw state events. Sums the cumulative-
+    distance delta across each engagement on/off pair from those events; open
+    engagements close at the last coord's t_ms.
+
+    Returns (0.0, 0.0) if coords.json or events.json is missing or unreadable
+    for any segment, or if fewer than two GPS samples exist.
     """
-    local_id = route.get("_local_id")
-    if not local_id:
-        return (0, 0)
+    segments = sorted(route.get("_segments", []), key=lambda s: s["number"])
+    if not segments:
+        return (0.0, 0.0)
 
-    total_duration_ms = (route.get("maxqlog", 0) + 1) * 60_000
-    engaged_ms = 0.0
+    t_ms: list[float] = []
+    cum_m: list[float] = []
+    seg_offset = 0.0
+    all_events: list[list[dict]] = []
 
-    for seg in route.get("_segments", []):
-        events_path = Path(seg["path"]) / "events.json"
-        if not events_path.exists():
-            continue
+    for seg in segments:
+        seg_dir = Path(seg["path"])
+        coords_path = seg_dir / "coords.json"
+        events_path = seg_dir / "events.json"
+        if not coords_path.exists() or not events_path.exists():
+            return (0.0, 0.0)
         try:
+            coords = json.loads(coords_path.read_text())
             events = json.loads(events_path.read_text())
-            last_enabled_offset = None
-            for ev in events:
-                if ev.get("type") != "state":
-                    continue
-                enabled = ev.get("data", {}).get("enabled", False)
-                offset = ev.get("route_offset_millis", 0)
-                if enabled and last_enabled_offset is None:
-                    last_enabled_offset = offset
-                elif not enabled and last_enabled_offset is not None:
-                    engaged_ms += offset - last_enabled_offset
-                    last_enabled_offset = None
-            # Close open engagement at segment end
-            if last_enabled_offset is not None:
-                seg_end_ms = (seg["number"] + 1) * 60_000
-                engaged_ms += seg_end_ms - last_enabled_offset
         except Exception:
-            pass
+            return (0.0, 0.0)
 
-    return (engaged_ms, total_duration_ms)
+        if coords:
+            seg_last = 0.0
+            for c in coords:
+                t_ms.append(float(c["t"]) * 1000.0)
+                cum_m.append(seg_offset + float(c["dist"]))
+                seg_last = float(c["dist"])
+            seg_offset += seg_last
+
+        all_events.append(events)
+
+    if len(t_ms) < 2:
+        return (0.0, 0.0)
+
+    intervals: list[tuple[float, float]] = []
+    open_on: float | None = None
+    for events in all_events:
+        for ev in events:
+            if ev.get("type") != "state":
+                continue
+            enabled = ev.get("data", {}).get("enabled", False)
+            offset = float(ev.get("route_offset_millis", 0))
+            if enabled and open_on is None:
+                open_on = offset
+            elif not enabled and open_on is not None:
+                intervals.append((open_on, offset))
+                open_on = None
+    if open_on is not None:
+        intervals.append((open_on, t_ms[-1]))
+
+    def _interp(target_ms: float) -> float:
+        if target_ms <= t_ms[0]:
+            return cum_m[0]
+        if target_ms >= t_ms[-1]:
+            return cum_m[-1]
+        i = bisect_left(t_ms, target_ms)
+        t0, t1 = t_ms[i - 1], t_ms[i]
+        d0, d1 = cum_m[i - 1], cum_m[i]
+        if t1 == t0:
+            return d0
+        return d0 + (d1 - d0) * (target_ms - t0) / (t1 - t0)
+
+    engaged_m = 0.0
+    for on_ms, off_ms in intervals:
+        engaged_m += _interp(off_ms) - _interp(on_ms)
+
+    return (engaged_m, cum_m[-1])
 
 
 def _route_bookmarks(route: dict) -> list[int]:

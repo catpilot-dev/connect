@@ -56,11 +56,13 @@ Single device info.
 ### `GET /v1.1/devices/{dongleId}/stats`
 Driving statistics with engagement breakdown.
 
+Engagement is measured by GPS distance: `engaged_miles` is the sum of cumulative distance traveled while `selfdriveState.enabled` was true, computed by interpolating the cached `coords.json` track at each engagement on/off transition. `total_miles_with_engagement` is the sum of route distance across routes that had any engagement, providing the denominator for engaged %.
+
 **Response:**
 ```json
 {
-  "all":  {"distance": 1234.5, "minutes": 420, "routes": 15, "engaged_minutes": 280.3, "total_minutes_with_events": 350.0},
-  "week": {"distance": 120.0,  "minutes": 45,  "routes": 3,  "engaged_minutes": 30.5,  "total_minutes_with_events": 40.0}
+  "all":  {"distance": 1234.5, "minutes": 420, "routes": 15, "engaged_miles": 1050.2, "total_miles_with_engagement": 1180.0},
+  "week": {"distance": 120.0,  "minutes": 45,  "routes": 3,  "engaged_miles": 95.7,   "total_miles_with_engagement": 110.0}
 }
 ```
 
@@ -167,6 +169,8 @@ Single route with full metadata. Triggers on-demand enrichment (GPS extraction, 
   ]
 }
 ```
+
+`engagement_pct` is distance-based: `round(engaged_meters / total_route_meters * 100)`.
 
 ### `DELETE /v1/route/{routeName}/`
 Soft-delete (hide) a route. Can be undone by removing from hidden list.
