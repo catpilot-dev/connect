@@ -6,49 +6,34 @@ A self-hosted web companion for [openpilot](https://github.com/commaai/openpilot
 
 COD also enables data collection workflows not possible with connect.comma.ai — scrub through video frame-by-frame, export high-resolution images with EXIF metadata, and annotate events with notes. We use this to collect speed limit sign training data for YOLO and verify OSM map contributions. Or simply bookmark moments worth remembering — wildlife sightings, scenic views, or road incidents.
 
-For developers, COD provides a signal browser for quick CAN/cereal message inspection using qlog, and lets you download rlog, qcamera, and other segment files to your local machine for offline analysis. Every route includes device metadata — openpilot version, git commit, AGNOS version — so you always know which software produced a given drive. COD can also render the openpilot HUD overlay onto dashcam footage as a live preview or downloadable MP4 with EXIF metadata — useful for reporting issues to comma.ai or sharing driving scenarios.
+![Route player with live HUD overlay](docs/cod_hud_on.png)
+*Route player with **HUD On** — the openpilot HUD overlaid live on dashcam footage, with route map and event timeline.*
+
+![HUD video rendering](docs/cod_hud_download.png)
+***HUD Download** renders the overlay into a shareable MP4 on-device, frame-exact with full plugin overlay fidelity.*
 
 Integrated into [catpilot](https://github.com/catpilot-dev/catpilot) releases starting from `v0.10.3` — automatically installed on first boot.
 
 ## Access
 
-Open `http://<comma_device_ip>:8082` in any browser on your local network.
+Open **http://catpilot.local/** (or `http://<comma_device_ip>/`) in any browser on the same network as your device.
 
 ## Features
 
 - **Route browser** — distance, duration, engagement stats, GPS map, soft-delete, star, and notes
 - **Video playback** — stream front/wide/driver cameras, extract frames with EXIF metadata
 - **HUD video** — render openpilot's HUD overlay onto dashcam footage as downloadable MP4 or live HLS stream
-- **Screen captures** — browse screenshots from the screen_capture plugin; onroad taps are extracted offline as exact HUD frames, named by tap time
-- **Signal browser** — explore all CAN messages in a route, extract and export signal data
+- **Screen captures** — screenshots from the screen_capture plugin; onroad taps become exact HUD frames automatically after you park, named by the moment you tapped
 - **Note taking** — add notes to any route for documentation, debugging, or personal reference
 - **Plugin management** — enable/disable plugins without SSH
 - **Settings** — driving personality, speed limit offsets, experimental mode, SSH keys, and more
 - **Model management** — swap driving models, check for updates, download new ones
-- **Map tiles** — download/manage offline OSM tiles for mapd
+- **Map tiles** — download/manage offline OSM tiles
 - **Software updates** — check, download, install openpilot updates and switch branches
 
-## Project Structure
-
-```
-connect/
-├── server.py              # aiohttp entry point (port 8082)
-├── route_store.py         # Route discovery, caching, enrichment
-├── handlers/              # REST API handlers
-│   ├── routes.py          # Route CRUD & enrichment
-│   ├── media.py           # Video/frame extraction
-│   ├── hud.py             # HUD render & stream
-│   ├── dashboard.py       # Live telemetry WebSocket
-│   ├── signals.py         # Signal browser
-│   ├── software.py        # Update lifecycle
-│   ├── updates.py         # COD + plugin update checks
-│   ├── models.py          # Model management
-│   ├── mapd.py            # Offline map tiles
-│   ├── params.py          # Device params & toggles
-│   └── ssh_keys.py        # SSH key management
-├── frontend/              # Svelte 5 + Vite + Tailwind CSS
-└── static/                # Built frontend (served by aiohttp)
-```
+Safety first: while the car is driving, COD refuses any action that could
+affect it — updates, reboots, model or plugin changes all wait until you're
+parked.
 
 ## Setup
 
@@ -60,24 +45,25 @@ No setup needed — catpilot installs COD automatically on first boot.
 
 [How to connect to your comma device](https://docs.comma.ai/how-to/connect-to-comma/)
 
+COD ships as a pre-built release tarball (the repo itself has no built
+frontend — cloning it won't give you a working install). Download and start
+the latest release:
+
 ```bash
 ssh comma@<device_ip>
 
-# Clone and start
 cd /data
-git clone https://github.com/catpilot-dev/connect-on-device.git connect-on-device
-cd connect-on-device && bash setup_service.sh
+curl -sfL $(curl -sf https://api.github.com/repos/catpilot-dev/connect-on-device/releases/latest \
+  | grep -o 'https://[^"]*cod-[^"]*\.tar\.gz') | tar xz
+bash connect-on-device/setup_service.sh
 ```
 
-### Local development
+Once installed, COD keeps itself updated from its release channel.
 
-```bash
-# Backend
-python server.py --data-dir ~/driving_data/data --port 8082
+## For developers
 
-# Frontend (hot reload, proxies API to :8082)
-cd frontend && npm install && npm run dev
-```
+Architecture, subsystems, and development workflow are documented in
+[DESIGN.md](DESIGN.md); the REST API in [API.md](API.md).
 
 ## License
 
