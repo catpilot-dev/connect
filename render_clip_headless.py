@@ -202,10 +202,6 @@ def main():
         # Set up recording environment (RECORD=1, RECORD_OUTPUT, etc.)
         setup_env(args.output, big=True, headless=True, duration=int(duration))
 
-        # Increase recorder queue and use blocking put so render waits for
-        # ffmpeg to consume frames instead of dropping them.
-        os.environ["_COD_RECORDER_BLOCKING"] = "1"
-
         # Register plugin hooks — plugins aren't auto-loaded by clip(),
         # only by the full openpilot manager startup.
         # Must register BEFORE ui_state import so SubMaster includes pluginBusLog.
@@ -221,10 +217,9 @@ def main():
                 "ui.state_subscriptions",   # adds pluginBusLog to SubMaster
                 "ui.state_tick",            # updates plugin state each frame
                 "ui.render_overlay",        # draws plugin visuals (speed sign, etc.)
-                "ui.post_end_drawing",      # frame capture (ui_recorder)
                 "ui.onroad_exp_button",     # experiment button
             }
-            # screen_capture conflicts with ui_recorder
+            # screen_capture grabs the same render texture as our own recorder
             _SKIP_PLUGINS = {"screen_capture"}
 
             import json as _json
@@ -253,8 +248,8 @@ def main():
             # instead of live PluginSub sockets (which don't exist during replay)
             _patch_plugin_bus_for_replay()
 
-            # Patch recorder for blocking capture + live preview + progress
-            from ui_recorder import recorder as _rec
+            # COD owns frame capture — see cod_recorder.
+            import cod_recorder as _rec
             _status_file = args.status_file
             _total_duration = duration
             _fps = 20
@@ -266,7 +261,7 @@ def main():
                 except FileNotFoundError:
                     pass
 
-            def _blocking_hook(default):
+            def _capture_hook(default):
                 if not _rec.RECORD:
                     return
                 from openpilot.system.ui.lib.application import gui_app
@@ -274,13 +269,13 @@ def main():
                 rt = gui_app._render_texture
                 if rt is None:
                     return
-                if not _rec._initialized:
-                    _rec._start(gui_app.width, gui_app.height, gui_app.target_fps)
+                if not _rec.is_started():
+                    _rec.start(gui_app.width, gui_app.height, gui_app.target_fps)
                 image = rl.load_image_from_texture(rt.texture)
                 data_size = image.width * image.height * 4
                 data = bytes(rl.ffi.buffer(image.data, data_size))
                 rl.unload_image(image)
-                _rec._writer_queue.put(data)
+                _rec.write_frame(data)
 
                 frame_num = gui_app.frame
                 elapsed = frame_num / _fps
@@ -314,11 +309,7 @@ def main():
                         "phase": "recording",
                     })
 
-            hook_list = hooks._hooks.get("ui.post_end_drawing", [])
-            for i, (pri, name, fn) in enumerate(hook_list):
-                if name == "ui_recorder":
-                    hook_list[i] = (pri, name, _blocking_hook)
-                    break
+            hooks.register("ui.post_end_drawing", "cod_recorder", _capture_hook, 50)
             print("Blocking capture + preview enabled", file=sys.stderr)
         except Exception as e:
             print(f"Warning: plugin hooks not available: {e}", file=sys.stderr)
