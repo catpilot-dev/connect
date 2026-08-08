@@ -22,7 +22,7 @@ from config import (COD_DIR, PLUGINS_REPO_DIR as PLUGIN_REPO_DIR, OPENPILOT_DIR,
 
 VERSION_FILE = os.path.join(COD_DIR, 'VERSION')
 GITHUB_REPO = 'catpilot-dev/connect-on-device'
-GITHUB_API = f'https://api.github.com/repos/{GITHUB_REPO}/releases/latest'
+GITHUB_API = f'https://api.github.com/repos/{GITHUB_REPO}/releases?per_page=30'
 
 CACHE_TTL = 600  # 10 minutes
 FETCH_TIMEOUT = 15  # seconds
@@ -45,12 +45,41 @@ def _parse_version(tag):
     return tag.strip().lstrip('v')
 
 
+def _channel(version):
+    """Channel prefix of a version: 'X.Y.Z' from 'X.Y.Z' or 'X.Y.Z-YYYY.MM.DD'.
+
+    The channel is the catpilot release the build targets (see
+    plugins/docs/RELEASE_PROCESS.md) — bootstrap releases are tagged vX.Y.Z,
+    rolling releases vX.Y.Z-YYYY.MM.DD on the same channel.
+    """
+    return version.split('-', 1)[0]
+
+
+def _pick_channel_release(releases, channel):
+    """Newest release on the given channel, or None.
+
+    A device must only self-update within its channel: releases for another
+    catpilot base (say v0.11.2 while this device runs the v0.11.1 base) are
+    built against different hook contracts and must never be offered. GitHub
+    lists releases newest-first, so the first channel match wins.
+    """
+    for rel in releases:
+        if rel.get('draft') or rel.get('prerelease'):
+            continue
+        version = _parse_version(rel.get('tag_name', ''))
+        if version and _channel(version) == channel:
+            return rel
+    return None
+
+
 # ─── COD: GitHub release check ──────────────────────────────────────
 
 async def _check_cod_release():
-    """Check GitHub releases API for a newer COD version.
+    """Check GitHub releases for a newer COD version on this device's channel.
 
-    Returns status dict or None on failure.
+    Only releases matching the local channel (vX.Y.Z or vX.Y.Z-YYYY.MM.DD with
+    the same X.Y.Z) are considered — never the globally latest release, which
+    may target a newer catpilot base. Returns status dict or None on failure.
     """
     local = _read_local_version()
     try:
@@ -60,14 +89,15 @@ async def _check_cod_release():
                 if resp.status != 200:
                     # No releases, rate-limited, or network error
                     return {'available': False, 'current': local, 'latest': local, 'summary': ''}
-                data = await resp.json()
+                releases = await resp.json()
     except (aiohttp.ClientError, asyncio.TimeoutError):
         return {'available': False, 'current': local, 'latest': local, 'summary': ''}
 
-    latest = _parse_version(data.get('tag_name', ''))
-    if not latest:
+    data = _pick_channel_release(releases if isinstance(releases, list) else [], _channel(local))
+    if data is None:
         return {'available': False, 'current': local, 'latest': local, 'summary': ''}
 
+    latest = _parse_version(data.get('tag_name', ''))
     available = latest != local
 
     # Find the tarball asset (cod-v<version>.tar.gz)

@@ -16,12 +16,14 @@ from handlers import updates as updates_module
 from handlers.updates import (
     _apply_cod_update,
     _apply_plugin_update,
+    _channel,
     _check_cod_release,
     _check_plugins,
     _git_fetch,
     _git_log_summary,
     _git_rev_parse,
     _parse_version,
+    _pick_channel_release,
     _read_local_version,
     handle_updates_apply,
     handle_updates_check,
@@ -91,10 +93,11 @@ class TestVersionHelpers:
 class TestCheckCodRelease:
     @pytest.mark.asyncio
     async def test_update_available(self):
-        """Latest release newer than local VERSION → available=True."""
+        """Newer rolling release on the device's channel → available=True."""
+        release = {**GITHUB_RELEASE_RESPONSE, 'tag_name': 'v1.0.0-2026.01.15'}
         mock_resp = AsyncMock()
         mock_resp.status = 200
-        mock_resp.json = AsyncMock(return_value=GITHUB_RELEASE_RESPONSE)
+        mock_resp.json = AsyncMock(return_value=[release])
 
         mock_session = AsyncMock()
         mock_session.get = MagicMock(return_value=AsyncMock(
@@ -112,7 +115,7 @@ class TestCheckCodRelease:
 
         assert result['available'] is True
         assert result['current'] == '1.0.0'
-        assert result['latest'] == '1.2.0'
+        assert result['latest'] == '1.0.0-2026.01.15'
         assert 'Bug fixes' in result['summary']
         assert result['download_url'].endswith('.tar.gz')
 
@@ -122,7 +125,7 @@ class TestCheckCodRelease:
         release = {**GITHUB_RELEASE_RESPONSE, 'tag_name': 'v1.0.0'}
         mock_resp = AsyncMock()
         mock_resp.status = 200
-        mock_resp.json = AsyncMock(return_value=release)
+        mock_resp.json = AsyncMock(return_value=[release])
 
         mock_session = AsyncMock()
         mock_session.get = MagicMock(return_value=AsyncMock(
@@ -180,10 +183,10 @@ class TestCheckCodRelease:
     @pytest.mark.asyncio
     async def test_fallback_to_tarball_url(self):
         """No assets → uses tarball_url from release."""
-        release = {**GITHUB_RELEASE_RESPONSE, 'assets': []}
+        release = {**GITHUB_RELEASE_RESPONSE, 'tag_name': 'v1.0.0-2026.01.15', 'assets': []}
         mock_resp = AsyncMock()
         mock_resp.status = 200
-        mock_resp.json = AsyncMock(return_value=release)
+        mock_resp.json = AsyncMock(return_value=[release])
 
         mock_session = AsyncMock()
         mock_session.get = MagicMock(return_value=AsyncMock(
@@ -200,6 +203,49 @@ class TestCheckCodRelease:
             result = await _check_cod_release()
 
         assert result['download_url'] == release['tarball_url']
+
+
+# ─── Channel selection (RELEASE_PROCESS.md) ──────────────────────────
+
+def _rel(tag, **kw):
+    return {'tag_name': tag, 'draft': False, 'prerelease': False, **kw}
+
+
+class TestChannelSelection:
+    """A device must only self-update within its channel — bootstrap vX.Y.Z,
+    rolling vX.Y.Z-YYYY.MM.DD. A v0.11.2 release existing while v0.11.1
+    devices still roll must never be offered to them."""
+
+    def test_channel_strips_rolling_suffix(self):
+        assert _channel('0.11.1') == '0.11.1'
+        assert _channel('0.11.1-2026.08.08') == '0.11.1'
+
+    def test_cross_channel_release_is_never_offered(self):
+        releases = [_rel('v0.11.2'), _rel('v0.11.1-2026.08.08'), _rel('v0.11.1')]
+        picked = _pick_channel_release(releases, '0.11.1')
+        assert picked['tag_name'] == 'v0.11.1-2026.08.08'
+
+    def test_newest_rolling_release_on_channel_wins(self):
+        # GitHub lists newest first — first channel match is the newest
+        releases = [
+            _rel('v0.11.1-2026.09.01'),
+            _rel('v0.11.1-2026.08.08'),
+            _rel('v0.11.1'),
+        ]
+        assert _pick_channel_release(releases, '0.11.1')['tag_name'] == 'v0.11.1-2026.09.01'
+
+    def test_no_release_on_channel_means_no_update(self):
+        releases = [_rel('v0.11.2'), _rel('v0.11.2-2026.09.01')]
+        assert _pick_channel_release(releases, '0.11.1') is None
+        assert _pick_channel_release([], '0.11.1') is None
+
+    def test_drafts_and_prereleases_are_skipped(self):
+        releases = [
+            _rel('v0.11.1-2026.09.01', draft=True),
+            _rel('v0.11.1-2026.08.20', prerelease=True),
+            _rel('v0.11.1-2026.08.08'),
+        ]
+        assert _pick_channel_release(releases, '0.11.1')['tag_name'] == 'v0.11.1-2026.08.08'
 
 
 # ─── Plugins: git helpers ────────────────────────────────────────────

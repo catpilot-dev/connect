@@ -11,3 +11,4 @@ build/raylib/
 build/*.tar.gz
 test_overlay.png
 reference/
+dist/
