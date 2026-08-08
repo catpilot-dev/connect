@@ -1,7 +1,7 @@
 <script>
   import { onMount, onDestroy } from 'svelte'
   import Hls from 'hls.js'
-  import { spriteUrl, cameraUrl, mjpegUrl } from '../api.js'
+  import { spriteUrl, cameraUrl, mjpegUrl, fetchFrameTimes } from '../api.js'
   import HudOverlay from './HudOverlay.svelte'
 
   /**
@@ -21,6 +21,7 @@
     selectionEnd = 0,
     currentTime = $bindable(0),
     duration = $bindable(0),
+    absoluteTime = $bindable(null),
     onTimeUpdate,
     onDurationChange,
     onPlay,
@@ -44,6 +45,22 @@
 
   // HD (fcamera) state
   let hdSegment = $state(-1)
+
+  // Per-frame capture times from the log, keyed by segment. The muxed MP4
+  // carries no real timestamps, so the wall-clock label is read from here
+  // rather than synthesised from the route start plus an elapsed offset.
+  let frameTimes = $state({})
+
+  async function ensureFrameTimes(seg) {
+    if (!route || frameTimes[seg] !== undefined) return
+    frameTimes[seg] = null  // in-flight marker, keeps concurrent loads to one
+    try {
+      const times = await fetchFrameTimes(route.local_id, seg)
+      frameTimes = { ...frameTimes, [seg]: times }
+    } catch {
+      frameTimes = { ...frameTimes, [seg]: null }
+    }
+  }
 
   // Track which video is active
   const showingHd = $derived(!!hdSource)
@@ -200,6 +217,7 @@
     if (seg < 0 || seg > maxSegment) return
 
     hdSegment = seg
+    ensureFrameTimes(seg)
     const url = cameraUrl(route.local_id, hdSource, seg)
     hdVideoEl.src = url
     hdVideoEl.load()
@@ -216,6 +234,12 @@
     if (!hdVideoEl || !showingHd) return
     const t = hdSegment * 60 + hdVideoEl.currentTime
     currentTime = t
+    const times = frameTimes[hdSegment]
+    if (times?.length) {
+      const idx = Math.min(times.length - 1,
+                           Math.max(0, Math.round(hdVideoEl.currentTime * 20)))
+      absoluteTime = times[idx]
+    }
     onTimeUpdate?.(t)
   }
 

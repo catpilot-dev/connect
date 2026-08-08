@@ -204,6 +204,13 @@ export function hudVideoUrl(routeName) {
   return `/v1/route/${routeId(routeName)}/hud/video`
 }
 
+/** Per-frame wall-clock capture times (epoch seconds) for a segment's fcamera */
+export async function fetchFrameTimes(routeName, segment) {
+  const res = await fetch(`/v1/route/${routeId(routeName)}/frame_times/${segment}`)
+  if (!res.ok) throw new Error(`fetchFrameTimes: ${res.status}`)
+  return res.json()
+}
+
 // ── Connectdata URL builders ────────────────────────────────
 
 /** Build /connectdata/... URL for media files */

@@ -103,6 +103,14 @@ export function formatAbsoluteTime(start, offsetSeconds) {
   return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
 
+/** Format an absolute epoch (seconds) — used for log-derived frame times */
+export function formatEpochTime(epochSeconds) {
+  if (!epochSeconds) return null
+  const d = new Date(epochSeconds * 1000)
+  if (isNaN(d.getTime()) || d.getFullYear() < 2000) return null
+  return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+}
+
 /** Format start time + offset to HH:MM (no seconds) */
 export function formatAbsoluteTimeHM(start, offsetSeconds) {
   if (!start) return null

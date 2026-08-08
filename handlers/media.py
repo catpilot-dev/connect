@@ -743,3 +743,67 @@ async def handle_mjpeg_stream(request: web.Request) -> web.StreamResponse:
             pass
 
     return response
+
+
+# ─── Per-frame capture times ─────────────────────────────────────────
+
+FRAME_TIMES_CACHE_DIR = Path(COD_CACHE_DIR) / "frame_times"
+
+
+def _frame_times_cached(store, fullname: str, local_id: str, segment: int) -> list | None:
+    """Per-frame wall-clock capture times for a segment, cached to disk.
+
+    Parsing an rlog costs seconds, so the extracted list is memoised — the
+    values are immutable once a route is recorded.
+    """
+    cache = FRAME_TIMES_CACHE_DIR / f"{local_id}--{segment}.json"
+    if cache.exists():
+        try:
+            return json.loads(cache.read_text())
+        except Exception:
+            pass
+
+    rlog = None
+    for name in ("rlog.zst", "rlog"):
+        p = store.resolve_segment_path(fullname, segment, name)
+        if p:
+            rlog = str(p)
+            break
+    if not rlog:
+        return None
+
+    from log_parser import extract_frame_times
+    times = extract_frame_times(rlog)
+    if not times:
+        return None
+
+    FRAME_TIMES_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = cache.with_suffix(".tmp")
+    tmp.write_text(json.dumps(times))
+    tmp.rename(cache)
+    return times
+
+
+async def handle_frame_times(request: web.Request) -> web.Response:
+    """GET /v1/route/{routeName}/frame_times/{segment}
+
+    Wall-clock capture time (epoch seconds) of every encoded fcamera frame in
+    the segment, indexed by frame position in the .hevc. Lets the player put its
+    time label, scrubber and HUD overlay on the log's own timebase instead of
+    synthesising times from an assumed frame rate.
+    """
+    route_name, route, store = get_route_or_404(request)
+    segment = int(request.match_info["segment"])
+    local_id = route["_local_id"]
+
+    loop = asyncio.get_event_loop()
+    times = await loop.run_in_executor(
+        store._executor, _frame_times_cached, store, route["fullname"], local_id, segment,
+    )
+    if times is None:
+        raise web.HTTPNotFound(
+            text=json.dumps({"error": f"No frame times for segment {segment}"}))
+
+    return web.json_response(times, headers={
+        "Cache-Control": "public, max-age=604800",
+    })

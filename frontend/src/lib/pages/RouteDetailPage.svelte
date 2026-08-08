@@ -31,6 +31,7 @@
   let error = $state(null)
 
   let currentTime = $state(0)
+  let absoluteTime = $state(null)
   let duration = $state(0)
   let isPlaying = $state(false)
   // HUD download (pre-render to MP4)
@@ -829,6 +830,7 @@
             {selectionEnd}
             bind:currentTime
             bind:duration
+            bind:absoluteTime
             onTimeUpdate={handleTimeUpdate}
             onPlay={handlePlay}
             onPause={handlePause}
@@ -845,6 +847,7 @@
                   {currentTime}
                   {duration}
                   startTime={route.start_time}
+                  {absoluteTime}
                   onSeek={handleSeek}
                   onToggle={handleToggle}
                   onRate={handleRate}
@@ -915,6 +918,7 @@
               {currentTime}
               {duration}
               startTime={route.start_time}
+              {absoluteTime}
               onSeek={handleSeek}
               onToggle={handleToggle}
               onRate={handleRate}

@@ -1,5 +1,5 @@
 <script>
-  import { formatVideoTimeHMS, formatAbsoluteTime } from '../format.js'
+  import { formatVideoTimeHMS, formatAbsoluteTime, formatEpochTime } from '../format.js'
 
   /**
    * Video playback controls bar.
@@ -13,6 +13,7 @@
     currentTime = 0,
     duration = 0,
     startTime = 0,
+    absoluteTime = null,
     onSeek,
     onToggle,
     onRate,
@@ -37,7 +38,13 @@
   const SKIP_STEP = 5
   const currentSeg = $derived(Math.floor(currentTime / 60))
   const currentFrame = $derived(String(Math.floor((currentTime % 1) * 20)).padStart(2, '0'))
-  const timeDisplay = $derived(formatAbsoluteTime(startTime, currentTime) || formatVideoTimeHMS(currentTime))
+  // Prefer the log-derived per-frame time; fall back to route start + offset
+  // for modes that have no frame times (MJPEG / HLS qcamera).
+  const timeDisplay = $derived(
+    formatEpochTime(absoluteTime)
+    || formatAbsoluteTime(startTime, currentTime)
+    || formatVideoTimeHMS(currentTime)
+  )
 
   function setSpeed(rate) {
     playbackRate = rate

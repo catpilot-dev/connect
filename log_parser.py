@@ -617,3 +617,99 @@ def extract_dashboard_telemetry(seg_log_pairs: list) -> list:
     return samples
 
 
+def _iter_log_full(log_path: str):
+    """Iterate every event in a log file (no head limit).
+
+    _iter_log_head reads a bounded prefix, which is enough for initData/GPS but
+    not for per-frame data spanning a whole segment.
+    """
+    from cereal import log as capnp_log
+    import zstandard as zstd
+
+    if log_path.endswith(".zst"):
+        with open(log_path, "rb") as f:
+            data = zstd.ZstdDecompressor().stream_reader(f).read()
+    else:
+        with open(log_path, "rb") as f:
+            data = f.read()
+
+    return capnp_log.Event.read_multiple_bytes(data)
+
+
+def extract_frame_times(rlog_path: str) -> list[float] | None:
+    """Wall-clock capture time of each encoded fcamera frame in one segment.
+
+    Returns a list indexed by position in the segment's fcamera.hevc — element i
+    is the true capture time of video frame i, in epoch seconds. None if the log
+    lacks the needed events.
+
+    The video carries no timestamps of its own, so synthesizing them from an
+    assumed frame rate drifts away from reality. The log has the exact chain:
+
+      roadEncodeIdx   encoded-frame index -> frameId  (frame order in the .hevc)
+      roadCameraState frameId -> timestampSof         (capture time, boot-mono)
+      gpsLocationExternal / clocks                    (boot-mono -> wall clock)
+
+    Use rlog, not qlog: qlog decimates roadCameraState to roughly every 20th
+    frameId, so most frames' capture times are simply absent there.
+    """
+    sof_by_frame: dict[int, float] = {}
+    encode_order: list[int] = []
+    mono_to_wall = None
+    clocks_fallback = None
+
+    try:
+        for ev in _iter_log_full(rlog_path):
+            w = ev.which()
+            if w == "roadCameraState":
+                cs = ev.roadCameraState
+                sof_by_frame[cs.frameId] = cs.timestampSof / 1e9
+            elif w == "roadEncodeIdx":
+                encode_order.append(ev.roadEncodeIdx.frameId)
+            elif w == "gpsLocationExternal" and mono_to_wall is None:
+                gps = ev.gpsLocationExternal
+                gps_ms = getattr(gps, "unixTimestampMillis", 0)
+                if gps_ms > 0 and (gps.flags & 1):
+                    mono_to_wall = gps_ms / 1000.0 - ev.logMonoTime / 1e9
+            elif w == "clocks" and clocks_fallback is None:
+                wall_ns = getattr(ev.clocks, "wallTimeNanos", 0)
+                if wall_ns:
+                    clocks_fallback = wall_ns / 1e9 - ev.logMonoTime / 1e9
+    except Exception as e:
+        logger.debug("frame time parse error (%s): %s", rlog_path, e)
+        return None
+
+    # GPS is the same clock create_time/gps_time already use; clocks (RTC) is
+    # the fallback when a segment has no fix.
+    offset = mono_to_wall if mono_to_wall is not None else clocks_fallback
+    if offset is None or not encode_order:
+        return None
+
+    times = [
+        None if sof_by_frame.get(fid) is None else sof_by_frame[fid] + offset
+        for fid in encode_order
+    ]
+
+    # A segment's first encoded frames are captured just before its own rlog
+    # starts (encodeId 0 maps to frameId 2, whose roadCameraState lands in the
+    # previous segment), so leading holes are normal. Fill any hole from the
+    # neighbouring known frames rather than dropping it.
+    known = [i for i, t in enumerate(times) if t is not None]
+    if not known:
+        return None
+    step = ((times[known[-1]] - times[known[0]]) / (known[-1] - known[0])
+            if len(known) > 1 else 0.05)
+    for i, t in enumerate(times):
+        if t is not None:
+            continue
+        before = next((k for k in reversed(known) if k < i), None)
+        after = next((k for k in known if k > i), None)
+        if before is not None and after is not None:
+            span = times[after] - times[before]
+            times[i] = times[before] + span * (i - before) / (after - before)
+        elif before is not None:
+            times[i] = times[before] + step * (i - before)
+        else:
+            times[i] = times[after] - step * (after - i)
+
+    return [round(t, 3) for t in times]

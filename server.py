@@ -84,6 +84,7 @@ from handlers import (
     handle_routes_list,
     handle_routes_segments,
     handle_camera_segment,
+    handle_frame_times,
     handle_mjpeg_stream,
     handle_qcamera_hls_manifest,
     handle_qcamera_hls_segment,
@@ -232,6 +233,7 @@ def create_app(data_dir: str, static_dir: str) -> web.Application:
     app.router.add_post("/v1/route/{routeName}/screenshot", handle_screenshot)
     app.router.add_get("/v1/route/{routeName}/frame", handle_frame)
     app.router.add_get("/v1/route/{routeName}/camera/{camera_type}/{segment}", handle_camera_segment)
+    app.router.add_get("/v1/route/{routeName}/frame_times/{segment}", handle_frame_times)
     app.router.add_get("/v1/route/{routeName}/mjpeg", handle_mjpeg_stream)
     app.router.add_get("/v1/route/{routeName}/qcamera.m3u8", handle_qcamera_hls_manifest)
     app.router.add_get("/v1/route/{routeName}/qcamera_hls/{filename}", handle_qcamera_hls_segment)
