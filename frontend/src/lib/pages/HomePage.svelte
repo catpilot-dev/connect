@@ -107,133 +107,8 @@
     return { ctx, w, h }
   }
 
-  // ── Temperature arc gauge (270°) ──────────────────────────────────────────
+  // ── Ring gauges (TEMP / CPU / GPU / MEM) ──────────────────────────────────
   let tempCanvas = $state(null)
-
-  $effect(() => {
-    if (!tempCanvas) return
-    const temp = maxTemp
-    const { ctx, w, h } = sizeCanvas(tempCanvas)
-
-    const cx = w / 2
-    const cy = h * 0.58
-    const r  = Math.min(w * 0.44, h * 0.64)
-    const lw = r * 0.10
-    const startAngle = Math.PI * 0.75
-    const sweep = Math.PI * 1.5
-
-    ctx.clearRect(0, 0, w, h)
-
-    // Zone bands behind track
-    const zones = [
-      { from: 0,    to: 0.42, color: 'rgba(0,255,148,0.07)' },
-      { from: 0.42, to: 0.72, color: 'rgba(247,183,49,0.07)' },
-      { from: 0.72, to: 1.0,  color: 'rgba(255,72,66,0.07)' },
-    ]
-    for (const z of zones) {
-      ctx.beginPath()
-      ctx.arc(cx, cy, r, startAngle + sweep * z.from, startAngle + sweep * z.to)
-      ctx.strokeStyle = z.color
-      ctx.lineWidth = lw
-      ctx.lineCap = 'butt'
-      ctx.stroke()
-    }
-
-    // Track base
-    ctx.beginPath()
-    ctx.arc(cx, cy, r, startAngle, startAngle + sweep)
-    ctx.strokeStyle = 'rgba(255,255,255,0.06)'
-    ctx.lineWidth = lw
-    ctx.lineCap = 'butt'
-    ctx.stroke()
-
-    // Tick marks
-    for (let i = 0; i <= 10; i++) {
-      const frac = i / 10
-      const a = startAngle + sweep * frac
-      const isMajor = (i % 5 === 0)
-      const inner = r - lw * 1.1
-      const outer = r + lw * (isMajor ? 0.7 : 0.3)
-      ctx.beginPath()
-      ctx.moveTo(cx + Math.cos(a) * inner, cy + Math.sin(a) * inner)
-      ctx.lineTo(cx + Math.cos(a) * outer, cy + Math.sin(a) * outer)
-      ctx.strokeStyle = isMajor ? 'rgba(255,255,255,0.20)' : 'rgba(255,255,255,0.07)'
-      ctx.lineWidth = isMajor ? 1.5 : 0.75
-      ctx.stroke()
-    }
-
-    if (temp !== null) {
-      const t = Math.max(0, Math.min(100, temp))
-      const frac = t / 100
-      const fillEnd = startAngle + sweep * frac
-      const col = t < 50 ? '#00ff94' : t < 75 ? '#f7b731' : '#ff4842'
-
-      // Glow pass
-      ctx.save()
-      ctx.shadowColor = col
-      ctx.shadowBlur = 20
-      ctx.beginPath()
-      ctx.arc(cx, cy, r, startAngle, fillEnd)
-      ctx.strokeStyle = col + '40'
-      ctx.lineWidth = lw * 2.4
-      ctx.lineCap = 'round'
-      ctx.stroke()
-      ctx.restore()
-
-      // Fill arc
-      ctx.beginPath()
-      ctx.arc(cx, cy, r, startAngle, fillEnd)
-      ctx.strokeStyle = col
-      ctx.lineWidth = lw
-      ctx.lineCap = 'round'
-      ctx.stroke()
-
-      // Tip pulse dot
-      const tx = cx + Math.cos(fillEnd) * r
-      const ty = cy + Math.sin(fillEnd) * r
-      const tg = ctx.createRadialGradient(tx, ty, 0, tx, ty, lw * 2.2)
-      tg.addColorStop(0,   col + 'ff')
-      tg.addColorStop(0.4, col + '80')
-      tg.addColorStop(1,   col + '00')
-      ctx.beginPath()
-      ctx.arc(tx, ty, lw * 2.2, 0, Math.PI * 2)
-      ctx.fillStyle = tg
-      ctx.fill()
-
-      // Value
-      ctx.textAlign = 'center'
-      ctx.fillStyle = '#f0f4f8'
-      ctx.font = `700 ${r * 0.82}px 'Oxanium', monospace`
-      ctx.textBaseline = 'alphabetic'
-      ctx.fillText(`${Math.round(t)}`, cx, cy + r * 0.08)
-
-      ctx.fillStyle = col
-      ctx.font = `600 ${r * 0.27}px 'Oxanium', monospace`
-      ctx.fillText('°C', cx + r * 0.38, cy - r * 0.30)
-
-      ctx.fillStyle = 'rgba(255,255,255,0.20)'
-      ctx.font = `600 ${r * 0.155}px 'Rajdhani', sans-serif`
-      ctx.textBaseline = 'top'
-      ctx.fillText('MAX TEMP', cx, cy + r * 0.18)
-
-      const zone = t < 50 ? 'NOMINAL' : t < 75 ? 'ELEVATED' : 'CRITICAL'
-      ctx.fillStyle = col + 'cc'
-      ctx.font = `700 ${r * 0.135}px 'Rajdhani', sans-serif`
-      ctx.fillText(zone, cx, cy + r * 0.36)
-    } else {
-      ctx.textAlign = 'center'
-      ctx.textBaseline = 'middle'
-      ctx.fillStyle = 'rgba(255,255,255,0.08)'
-      ctx.font = `700 ${r * 0.5}px 'Oxanium', monospace`
-      ctx.fillText('---', cx, cy)
-      ctx.fillStyle = 'rgba(255,255,255,0.12)'
-      ctx.font = `600 ${r * 0.14}px 'Rajdhani', sans-serif`
-      ctx.textBaseline = 'top'
-      ctx.fillText('AWAITING DATA', cx, cy + r * 0.22)
-    }
-  })
-
-  // ── Mini ring gauges ──────────────────────────────────────────────────────
   let cpuCanvas = $state(null)
   let gpuCanvas = $state(null)
   let memCanvas = $state(null)
@@ -298,6 +173,11 @@
     ctx.fillText(label, cx, cy + r + lw * 0.72)
   }
 
+  $effect(() => {
+    const t = maxTemp
+    const col = t == null ? '#00ff94' : t < 50 ? '#00ff94' : t < 75 ? '#f7b731' : '#ff4842'
+    drawRing(tempCanvas, t, col, 'TEMP')
+  })
   $effect(() => { drawRing(cpuCanvas, cpuUsage, '#f7b731', 'CPU') })
   $effect(() => { drawRing(gpuCanvas, gpuUsage, '#b06bff', 'GPU') })
   $effect(() => { drawRing(memCanvas, memUsage, '#00ff94', 'MEM') })
@@ -479,16 +359,10 @@
       <!-- Instrument cluster -->
       {#if isLive}
         <div class="cluster">
-          <!-- Temp: left column, full height -->
-          <div class="cluster-temp">
-            <canvas bind:this={tempCanvas} class="temp-canvas" aria-label="Temperature"></canvas>
-          </div>
-          <!-- Resource rings: right column, stacked -->
-          <div class="cluster-rings">
-            <canvas bind:this={cpuCanvas} class="ring-canvas" aria-label="CPU"></canvas>
-            <canvas bind:this={gpuCanvas} class="ring-canvas" aria-label="GPU"></canvas>
-            <canvas bind:this={memCanvas} class="ring-canvas" aria-label="MEM"></canvas>
-          </div>
+          <canvas bind:this={tempCanvas} class="ring-canvas" aria-label="Temperature"></canvas>
+          <canvas bind:this={cpuCanvas} class="ring-canvas" aria-label="CPU"></canvas>
+          <canvas bind:this={gpuCanvas} class="ring-canvas" aria-label="GPU"></canvas>
+          <canvas bind:this={memCanvas} class="ring-canvas" aria-label="MEM"></canvas>
         </div>
       {/if}
 
@@ -550,7 +424,7 @@
       DRIVE
     </a>
     <div class="nav-secondary">
-      <a href="/" class="nav-btn">
+      <a href="/routes" class="nav-btn">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round">
           <polyline points="22,12 18,12 15,21 9,3 6,12 2,12"/>
         </svg>
@@ -832,30 +706,12 @@
   /* ── Instrument cluster ──────────────────────────────────────────────────── */
   .cluster {
     display: flex;
+    justify-content: space-around;
     gap: 0.5rem;
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: 12px;
     padding: 0.6rem 0.6rem 0.45rem;
-  }
-
-  .cluster-temp {
-    flex: 1.15;
-    min-width: 0;
-  }
-
-  .temp-canvas {
-    display: block;
-    width: 100%;
-    aspect-ratio: 1 / 0.86;
-  }
-
-  .cluster-rings {
-    display: flex;
-    flex-direction: column;
-    gap: 0.2rem;
-    justify-content: space-between;
-    flex-shrink: 0;
   }
 
   .ring-canvas {

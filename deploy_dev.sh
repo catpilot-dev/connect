@@ -7,8 +7,18 @@ HOST="${1:-c3}"
 REMOTE_DIR="/data/connect-on-device"
 LOCAL_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# Build frontend if static/ is stale or missing
-if [ ! -d "$LOCAL_DIR/static" ] || [ "$LOCAL_DIR/frontend/src" -nt "$LOCAL_DIR/static/index.html" ]; then
+# Build frontend if static/ is stale or missing. Use `find -newer` rather than
+# bash's `-nt` on the src directory — directory mtimes don't update when files
+# inside them change, so plain `-nt` silently skipped rebuilds for src edits.
+NEWER_SRC=""
+if [ -f "$LOCAL_DIR/static/index.html" ]; then
+  NEWER_SRC=$(find "$LOCAL_DIR/frontend" -type f \
+    -not -path '*/node_modules/*' \
+    -not -path '*/.vite/*' \
+    -newer "$LOCAL_DIR/static/index.html" -print -quit 2>/dev/null)
+fi
+
+if [ ! -f "$LOCAL_DIR/static/index.html" ] || [ -n "$NEWER_SRC" ]; then
   echo "Building frontend..."
   cd "$LOCAL_DIR/frontend"
   npm run build
@@ -45,6 +55,6 @@ CURRENT_ASSETS=$(ls "$LOCAL_DIR/static/assets/")
 ssh "$HOST" "cd ${REMOTE_DIR}/static/assets && for f in *; do echo '$CURRENT_ASSETS' | grep -qxF \"\$f\" || rm -v \"\$f\"; done"
 
 echo "Restarting COD..."
-ssh "$HOST" "pkill -f 'python.*server\.py' 2>/dev/null; sleep 3; bash ${REMOTE_DIR}/setup_service.sh; sleep 3; curl -sf http://localhost:8082/health && echo ' COD is up' || echo 'COD not responding yet'"
+ssh "$HOST" "pkill -f 'python.*server\.py' 2>/dev/null; sleep 3; bash ${REMOTE_DIR}/setup_service.sh; for i in 1 2 3 4 5 6 7 8 9 10; do sleep 2; curl -sf http://localhost/health >/dev/null && { echo ' COD is up'; exit 0; }; done; echo 'COD not responding yet'"
 
 echo "Dev deploy complete"
