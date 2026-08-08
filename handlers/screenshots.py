@@ -23,6 +23,7 @@ async def handle_screenshots_list(request: web.Request) -> web.Response:
     if not os.path.isdir(SCREENSHOTS_DIR):
         return web.json_response([])
 
+    exact = _state_epoch_map(request.app.get("store"))
     files = []
     for name in os.listdir(SCREENSHOTS_DIR):
         if not name.lower().endswith('.png'):
@@ -30,15 +31,21 @@ async def handle_screenshots_list(request: web.Request) -> web.Response:
         path = os.path.join(SCREENSHOTS_DIR, name)
         try:
             stat = os.stat(path)
+            # The capture moment, never mtime — worker-extracted onroad
+            # captures are written long after the tap.
+            epoch = exact.get(name)
+            if epoch is None:
+                epoch = _parse_capture_epoch(name)
             files.append({
                 'filename': name,
                 'size': stat.st_size,
                 'mtime': stat.st_mtime,
+                'capture_time': epoch if epoch is not None else stat.st_mtime,
             })
         except OSError:
             continue
 
-    files.sort(key=lambda f: f['mtime'], reverse=True)
+    files.sort(key=lambda f: f['capture_time'], reverse=True)
     return web.json_response(files)
 
 
@@ -80,7 +87,12 @@ async def handle_screenshot_delete(request: web.Request) -> web.Response:
 
 
 def _parse_capture_epoch(filename: str) -> float | None:
-    """Parse epoch from capture_YYYYMMDD_HHMMSS.png filename."""
+    """Parse epoch from capture_YYYYMMDD_HHMMSS.png filename.
+
+    Correct for plugin-saved offroad captures (device clock). Worker-extracted
+    onroad captures are named in the drive location's timezone — for those the
+    exact epoch comes from _state_epoch_map, never from the name.
+    """
     try:
         stem = filename.rsplit('.', 1)[0]  # capture_20260315_035151
         ts_str = stem.split('_', 1)[1]  # 20260315_035151
@@ -88,6 +100,25 @@ def _parse_capture_epoch(filename: str) -> float | None:
         return dt.timestamp()  # local time (same clock as rlog on device)
     except (ValueError, IndexError):
         return None
+
+
+def _state_epoch_map(store) -> dict:
+    """filename → exact tap epoch, from every route's hud_capture_state.
+
+    The worker names PNGs in the drive location's local time (human-readable,
+    no offset suffix) and records the absolute epoch here — this map is the
+    source of truth for matching and display; filename parsing is only the
+    fallback for plugin-saved captures.
+    """
+    out = {}
+    if store is None:
+        return out
+    for meta in store._metadata.values():
+        for e in (meta.get("hud_capture_state") or {}).get("bookmarks", {}).values():
+            f, ep = e.get("file"), e.get("epoch")
+            if f and ep:
+                out[f] = ep
+    return out
 
 
 async def handle_screenshot_by_time(request: web.Request) -> web.Response:
@@ -104,13 +135,16 @@ async def handle_screenshot_by_time(request: web.Request) -> web.Response:
     if not os.path.isdir(SCREENSHOTS_DIR):
         return web.json_response({'error': 'no screenshots'}, status=404)
 
+    exact = _state_epoch_map(request.app.get("store"))
     best_file = None
     best_delta = float('inf')
 
     for name in os.listdir(SCREENSHOTS_DIR):
         if not name.lower().endswith('.png'):
             continue
-        epoch = _parse_capture_epoch(name)
+        epoch = exact.get(name)
+        if epoch is None:
+            epoch = _parse_capture_epoch(name)
         if epoch is None:
             continue
         delta = abs(epoch - target)

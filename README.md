@@ -19,7 +19,7 @@ Open `http://<comma_device_ip>:8082` in any browser on your local network.
 - **Route browser** — distance, duration, engagement stats, GPS map, soft-delete, star, and notes
 - **Video playback** — stream front/wide/driver cameras, extract frames with EXIF metadata
 - **HUD video** — render openpilot's HUD overlay onto dashcam footage as downloadable MP4 or live HLS stream
-- **Live dashboard** — real-time telemetry via WebSocket (speed, steering, temperature, engagement)
+- **Screen captures** — browse screenshots from the screen_capture plugin; onroad taps are extracted offline as exact HUD frames, named by tap time
 - **Signal browser** — explore all CAN messages in a route, extract and export signal data
 - **Note taking** — add notes to any route for documentation, debugging, or personal reference
 - **Plugin management** — enable/disable plugins without SSH

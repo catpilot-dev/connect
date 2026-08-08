@@ -268,10 +268,17 @@ async def handle_route_get(request: web.Request) -> web.Response:
             # Normalize old-format bookmarks (plain numbers → dicts)
             existing = [b if isinstance(b, dict) else {"time_sec": b, "label": ""} for b in existing]
             existing_times = {b["time_sec"] for b in existing}
+            state_bms = (meta.get("hud_capture_state") or {}).get("bookmarks", {})
             for ms in drive_bm:
                 t = round(ms / 1000, 1)
                 if t not in existing_times:
-                    existing.append({"time_sec": t, "label": "Drive bookmark"})
+                    bm = {"time_sec": t, "label": "Drive bookmark"}
+                    # Exact tap wall-time from the screenshot worker's qlog scan —
+                    # used by the frontend to match the capture PNG by name.
+                    epoch = state_bms.get(str(ms), {}).get("epoch")
+                    if epoch is not None:
+                        bm["epoch"] = epoch
+                    existing.append(bm)
             existing.sort(key=lambda b: b["time_sec"])
             meta["bookmarks"] = existing
         meta["drive_bookmarks_imported"] = True

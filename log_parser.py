@@ -258,6 +258,44 @@ def _extract_bookmarks(log_path: str, segment_num: int) -> list:
     return sorted(bookmarks)
 
 
+def _extract_bookmark_epochs(log_path: str, segment_num: int) -> list:
+    """Extract (route_offset_millis, wall_epoch) per userBookmark in a log.
+
+    wall_epoch is the exact tap time: the bookmark's logMonoTime converted
+    mono→wall against the segment's first fixed gpsLocationExternal (any fix
+    works — both clocks advance together). None when the segment has no fix;
+    callers fall back to create_time + offset, which carries the route's
+    GPS-fix lag.
+    """
+    taps = []  # (logMonoTime, route_offset_millis)
+    base_mono = None
+    gps_ref = None  # (logMonoTime, unix_seconds)
+
+    try:
+        for ev in _iter_log(log_path):
+            w = ev.which()
+            if base_mono is None and w != "initData":
+                base_mono = ev.logMonoTime
+
+            if gps_ref is None and w == "gpsLocationExternal":
+                gps = ev.gpsLocationExternal
+                ms = getattr(gps, "unixTimestampMillis", 0)
+                if (gps.flags & 1) and ms > 0:
+                    gps_ref = (ev.logMonoTime, ms / 1000.0)
+
+            if w == "userBookmark":
+                offset_ms = (ev.logMonoTime - base_mono) / 1e6 if base_mono is not None else 0
+                taps.append((ev.logMonoTime, round(segment_num * 60000 + offset_ms)))
+    except Exception as e:
+        logger.debug("bookmark epoch extraction error for %s: %s", log_path, e)
+
+    result = []
+    for mono, offset in taps:
+        epoch = gps_ref[1] + (mono - gps_ref[0]) / 1e9 if gps_ref else None
+        result.append((offset, epoch))
+    return sorted(result)
+
+
 def _generate_events_json(log_path: str, segment_num: int) -> list:
     """Generate drive events (events.json) from an rlog file."""
     events = []

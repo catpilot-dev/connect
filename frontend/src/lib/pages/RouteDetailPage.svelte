@@ -474,7 +474,9 @@
     bookmarkExportBusy = index
     try {
       const bm = metaBookmarks[index]
-      const epoch = (route.create_time || 0) + bm.time_sec
+      // bm.epoch is the exact tap wall-time (mono→wall from the log);
+      // create_time + time_sec carries the route's GPS-fix lag.
+      const epoch = bm.epoch ?? ((route.create_time || 0) + bm.time_sec)
 
       // Try HUD screenshot first (captured live with overlay)
       let res, filename

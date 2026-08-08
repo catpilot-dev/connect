@@ -140,7 +140,9 @@ def main():
     parser.add_argument("--dongle-id", required=True)
     parser.add_argument("--data-dir", required=True)
     parser.add_argument("--start", type=float, default=0)
-    parser.add_argument("--end", type=float, required=True)
+    parser.add_argument("--end", type=float, default=None)
+    parser.add_argument("--screenshot-at", type=float, default=None,
+                        help="Route-offset seconds — render a single frame and write a PNG to --output")
     parser.add_argument("--output", required=True)
     parser.add_argument("--status-file", required=True)
     parser.add_argument("--fps", type=int, default=20)
@@ -151,6 +153,16 @@ def main():
     parser.add_argument("--op-commit", default="")
     parser.add_argument("--car-fingerprint", default="")
     args = parser.parse_args()
+
+    shot_mode = args.screenshot_at is not None
+    if shot_mode:
+        # Single-frame PNG extraction: replay a short window ending just past the
+        # target so SubMaster state (model, alerts, HUD elements) has settled.
+        args.start = max(0, int(args.screenshot_at) - 2)
+        args.end = int(args.screenshot_at) + 1
+    elif args.end is None:
+        write_status(args.status_file, {"status": "error", "error": "--end is required"})
+        sys.exit(1)
 
     duration = args.end - args.start
     if duration <= 0:
@@ -199,8 +211,13 @@ def main():
         canonical_name = f"{args.dongle_id}/{args.local_id}"
         route = Route(canonical_name, data_dir=symlink_dir)
 
-        # Set up recording environment (RECORD=1, RECORD_OUTPUT, etc.)
-        setup_env(args.output, big=True, headless=True, duration=int(duration))
+        if shot_mode:
+            # No RECORD/ffmpeg — a post_end_drawing hook exports one frame as PNG.
+            os.environ["OFFSCREEN"] = "1"
+            os.environ["BIG"] = "1"
+        else:
+            # Set up recording environment (RECORD=1, RECORD_OUTPUT, etc.)
+            setup_env(args.output, big=True, headless=True, duration=int(duration))
 
         # Register plugin hooks — plugins aren't auto-loaded by clip(),
         # only by the full openpilot manager startup.
@@ -248,69 +265,101 @@ def main():
             # instead of live PluginSub sockets (which don't exist during replay)
             _patch_plugin_bus_for_replay()
 
-            # COD owns frame capture — see cod_recorder.
-            import cod_recorder as _rec
-            _status_file = args.status_file
-            _total_duration = duration
-            _fps = 20
-            _preview_path = os.path.join(os.path.dirname(args.status_file), "preview.jpg")
-            # Clean up stale preview from previous render
-            for _old in (_preview_path, _preview_path + ".tmp"):
-                try:
-                    os.unlink(_old)
-                except FileNotFoundError:
-                    pass
+            if shot_mode:
+                # Capture the first frame at/after the target index. Target maps
+                # route-offset to render frames the same way clip() pairs camera
+                # frames with log chunks: frame i ↔ start + i/20 s.
+                _target_idx = min(round((args.screenshot_at - args.start) * 20),
+                                  int(duration * 20) - 1)
+                _shot = {"done": False}
 
-            def _capture_hook(default):
-                if not _rec.RECORD:
-                    return
-                from openpilot.system.ui.lib.application import gui_app
-                import pyray as rl
-                rt = gui_app._render_texture
-                if rt is None:
-                    return
-                if not _rec.is_started():
-                    _rec.start(gui_app.width, gui_app.height, gui_app.target_fps)
-                image = rl.load_image_from_texture(rt.texture)
-                data_size = image.width * image.height * 4
-                data = bytes(rl.ffi.buffer(image.data, data_size))
-                rl.unload_image(image)
-                _rec.write_frame(data)
+                def _screenshot_hook(default):
+                    if _shot["done"]:
+                        return
+                    from openpilot.system.ui.lib.application import gui_app
+                    import pyray as rl
+                    rt = gui_app._render_texture
+                    if rt is None or gui_app.frame < _target_idx:
+                        return
+                    _shot["done"] = True
+                    image = rl.load_image_from_texture(rt.texture)
+                    rl.image_flip_vertical(image)
+                    w, h = image.width, image.height
+                    rgba = bytes(rl.ffi.buffer(image.data, w * h * 4))
+                    rl.unload_image(image)
+                    from PIL import Image as PILImage
+                    img = PILImage.frombytes("RGBA", (w, h), rgba).convert("RGB")
+                    _tmp = args.output + ".tmp"
+                    img.save(_tmp, format="PNG")
+                    os.replace(_tmp, args.output)
+                    write_status(args.status_file, {"status": "complete", "output": args.output})
 
-                frame_num = gui_app.frame
-                elapsed = frame_num / _fps
-
-                # Write JPEG preview every 10th frame (~2fps)
-                # Use PIL instead of raylib export (more reliable with absolute paths)
-                if frame_num % 10 == 0:
+                hooks.register("ui.post_end_drawing", "cod_screenshot", _screenshot_hook, 50)
+                print(f"Screenshot capture enabled (frame {_target_idx})", file=sys.stderr)
+            else:
+                # COD owns frame capture — see cod_recorder.
+                import cod_recorder as _rec
+                _status_file = args.status_file
+                _total_duration = duration
+                _fps = 20
+                _preview_path = os.path.join(os.path.dirname(args.status_file), "preview.jpg")
+                # Clean up stale preview from previous render
+                for _old in (_preview_path, _preview_path + ".tmp"):
                     try:
-                        from PIL import Image as PILImage
-                        import io
-                        preview = rl.load_image_from_texture(rt.texture)
-                        rl.image_flip_vertical(preview)
-                        w, h = preview.width, preview.height
-                        rgba = bytes(rl.ffi.buffer(preview.data, w * h * 4))
-                        rl.unload_image(preview)
-                        img = PILImage.frombytes("RGBA", (w, h), rgba).convert("RGB")
-                        img = img.resize((960, 480), PILImage.LANCZOS)
-                        _tmp_path = _preview_path + ".tmp"
-                        img.save(_tmp_path, "JPEG", quality=70)
-                        os.rename(_tmp_path, _preview_path)
-                    except Exception as _prev_err:
-                        import traceback
-                        traceback.print_exc(file=sys.stderr)
+                        os.unlink(_old)
+                    except FileNotFoundError:
+                        pass
 
-                # Update status every second
-                if frame_num % _fps == 0:
-                    write_status(_status_file, {
-                        "status": "rendering",
-                        "elapsed_sec": round(min(elapsed, _total_duration), 1),
-                        "total_sec": _total_duration,
-                        "phase": "recording",
-                    })
+                def _capture_hook(default):
+                    if not _rec.RECORD:
+                        return
+                    from openpilot.system.ui.lib.application import gui_app
+                    import pyray as rl
+                    rt = gui_app._render_texture
+                    if rt is None:
+                        return
+                    if not _rec.is_started():
+                        _rec.start(gui_app.width, gui_app.height, gui_app.target_fps)
+                    image = rl.load_image_from_texture(rt.texture)
+                    data_size = image.width * image.height * 4
+                    data = bytes(rl.ffi.buffer(image.data, data_size))
+                    rl.unload_image(image)
+                    _rec.write_frame(data)
 
-            hooks.register("ui.post_end_drawing", "cod_recorder", _capture_hook, 50)
-            print("Blocking capture + preview enabled", file=sys.stderr)
+                    frame_num = gui_app.frame
+                    elapsed = frame_num / _fps
+
+                    # Write JPEG preview every 10th frame (~2fps)
+                    # Use PIL instead of raylib export (more reliable with absolute paths)
+                    if frame_num % 10 == 0:
+                        try:
+                            from PIL import Image as PILImage
+                            import io
+                            preview = rl.load_image_from_texture(rt.texture)
+                            rl.image_flip_vertical(preview)
+                            w, h = preview.width, preview.height
+                            rgba = bytes(rl.ffi.buffer(preview.data, w * h * 4))
+                            rl.unload_image(preview)
+                            img = PILImage.frombytes("RGBA", (w, h), rgba).convert("RGB")
+                            img = img.resize((960, 480), PILImage.LANCZOS)
+                            _tmp_path = _preview_path + ".tmp"
+                            img.save(_tmp_path, "JPEG", quality=70)
+                            os.rename(_tmp_path, _preview_path)
+                        except Exception as _prev_err:
+                            import traceback
+                            traceback.print_exc(file=sys.stderr)
+
+                    # Update status every second
+                    if frame_num % _fps == 0:
+                        write_status(_status_file, {
+                            "status": "rendering",
+                            "elapsed_sec": round(min(elapsed, _total_duration), 1),
+                            "total_sec": _total_duration,
+                            "phase": "recording",
+                        })
+
+                hooks.register("ui.post_end_drawing", "cod_recorder", _capture_hook, 50)
+                print("Blocking capture + preview enabled", file=sys.stderr)
         except Exception as e:
             print(f"Warning: plugin hooks not available: {e}", file=sys.stderr)
 
@@ -327,6 +376,10 @@ def main():
             end=int(args.end),
             headless=True,
             big=True,
+            # A screenshot must show exactly what the driver saw — no burned-in
+            # metadata banner or clip-time overlay.
+            show_metadata=not shot_mode,
+            show_time=not shot_mode,
         )
 
         # Verify output

@@ -180,7 +180,7 @@
           </div>
 
           <div class="px-2.5 py-1.5 text-xs text-surface-400">
-            <div class="truncate">{formatDate(s.mtime)}</div>
+            <div class="truncate">{formatDate(s.capture_time ?? s.mtime)}</div>
             <div class="text-surface-600">{formatSize(s.size)}</div>
           </div>
         </div>

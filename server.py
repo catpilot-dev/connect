@@ -121,6 +121,7 @@ from handlers import (
     handle_hud_data,
 )
 from route_store import DEFAULT_DATA_DIR, DEFAULT_PORT, RouteStore
+from screenshot_worker import screenshot_worker
 from storage_management import run_cleanup
 
 logger = logging.getLogger("connect")
@@ -174,12 +175,13 @@ async def _startup(app: web.Application):
     # Start periodic background tasks
     app["cleanup_task"] = asyncio.create_task(_cleanup_worker(app))
     app["health_task"] = asyncio.create_task(_health_worker(app))
+    app["screenshot_task"] = asyncio.create_task(screenshot_worker(app))
 
 
 
 async def _shutdown(app: web.Application):
     """Clean shutdown — stop any active HUD stream and cleanup task."""
-    for name in ("cleanup_task", "health_task"):
+    for name in ("cleanup_task", "health_task", "screenshot_task"):
         task = app.get(name)
         if task:
             task.cancel()

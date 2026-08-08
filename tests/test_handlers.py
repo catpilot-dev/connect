@@ -564,6 +564,7 @@ class TestOnroadGuard:
         ("post", "/v1/models/swap"),
         ("post", "/v1/plugins/phone_gps/toggle"),
         ("post", "/v1/screencast/start"),
+        ("post", "/v1/route/000003e5--c904a8df49/hud/prerender"),
     ]
 
     @pytest.mark.asyncio

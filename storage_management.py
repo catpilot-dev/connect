@@ -162,8 +162,15 @@ def run_cleanup(store) -> dict:
             if has_xattr_preserve(store, lid):
                 continue
             candidates.append(lid)
-        # Sort oldest first by route counter (lowest = oldest)
-        candidates.sort(key=_route_counter)
+
+        def _has_bookmarks(lid: str) -> bool:
+            meta = store._metadata.get(lid) or {}
+            return bool(meta.get("bookmarks")
+                        or (meta.get("hud_capture_state") or {}).get("bookmarks"))
+
+        # Oldest first by route counter; bookmarked routes go last so their
+        # footage survives until the screenshot worker has extracted the taps.
+        candidates.sort(key=lambda lid: (_has_bookmarks(lid), _route_counter(lid)))
 
         for lid in candidates:
             _delete_route_from_disk(store, lid)

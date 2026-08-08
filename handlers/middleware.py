@@ -35,6 +35,7 @@ _ONROAD_FORBIDDEN = re.compile(
     r"|updates/apply"
     r"|plugins/"          # toggle, param, repo, repo/install
     r"|screencast/"       # takes over the C3 display and restarts the UI
+    r"|route/[^/]+/hud/prerender"  # heavy headless render — competes with driving stack
     r")"
 )
 
