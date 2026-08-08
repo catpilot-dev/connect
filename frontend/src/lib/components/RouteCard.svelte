@@ -133,9 +133,9 @@
         {#if durationMin != null}
           <span>{formatDuration(durationMin)}</span>
         {/if}
-        {#if route.distance != null}
+        {#if route.distance_m != null}
           <span class="text-surface-600">&middot;</span>
-          <span>{formatDistance(route.distance)}</span>
+          <span>{formatDistance(route.distance_m)}</span>
         {/if}
         {#if route.engagement_pct != null}
           <span class="text-surface-600">&middot;</span>

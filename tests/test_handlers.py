@@ -60,7 +60,9 @@ class TestDevices:
         assert "all" in data
         assert "week" in data
         assert "routes" in data["all"]
-        assert "distance" in data["all"]
+        assert "distance_m" in data["all"]
+        assert "engaged_m" in data["all"]
+        assert "total_m_with_engagement" in data["all"]
 
 
 # ─── Route list ──────────────────────────────────────────────────────

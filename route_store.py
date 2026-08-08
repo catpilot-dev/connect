@@ -341,7 +341,7 @@ class RouteStore:
         return None
 
     def _calc_route_distance(self, local_id: str, segments: list) -> float | None:
-        """Calculate total route distance in miles.
+        """Calculate total route distance in meters.
 
         Tier 1: Sum cached coords.json last-point dist (accurate, from visited routes)
         Tier 2: Use total_distance_m from metadata (computed during enrichment)
@@ -361,13 +361,13 @@ class RouteStore:
             except Exception:
                 pass
         if found > 0:
-            return round(total_m / 1609.344, 1)
+            return round(total_m, 1)
 
         # Tier 2: enrichment-computed total distance
         meta = self._metadata.get(local_id, {})
         total_dist = meta.get("total_distance_m")
         if total_dist and total_dist > 0:
-            return round(total_dist / 1609.344, 1)
+            return round(total_dist, 1)
 
         return None
 
@@ -417,7 +417,7 @@ class RouteStore:
             "git_dirty": None,
             "git_remote": internal.get("git_remote"),
             "is_public": True,
-            "distance": self._calc_route_distance(local_id, info["segments"]),
+            "distance_m": self._calc_route_distance(local_id, info["segments"]),
             "maxqlog": max_seg,
             "engagement_pct": internal.get("engagement_pct"),
             "platform": internal.get("car_fingerprint"),
@@ -464,7 +464,7 @@ class RouteStore:
             route = self._build_route(local_id, info, internal)
 
             # Hide stub routes: < 2 minutes (maxqlog < 1) and no distance
-            if route["maxqlog"] < 1 and not route.get("distance"):
+            if route["maxqlog"] < 1 and not route.get("distance_m"):
                 continue
 
             # Hide routes with no GPS time (would show "Invalid Date" in UI)
@@ -1052,7 +1052,7 @@ class RouteStore:
             if local_id in self._hidden:
                 route["recycled_reason"] = "deleted"
                 route["hidden_at"] = self._hidden[local_id]
-            elif route["maxqlog"] < 1 and not route.get("distance"):
+            elif route["maxqlog"] < 1 and not route.get("distance_m"):
                 route["recycled_reason"] = "invalid"
             elif not internal.get("wall_time_nanos"):
                 route["recycled_reason"] = "invalid"

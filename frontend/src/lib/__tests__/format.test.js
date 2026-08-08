@@ -24,15 +24,13 @@ describe('formatDistance', () => {
   })
 
   it('sub-km returns meters', () => {
-    // 0.3 miles = ~483m
-    const result = formatDistance(0.3)
+    const result = formatDistance(483)
     expect(result).toMatch(/\d+ m/)
     expect(result).not.toContain('km')
   })
 
   it('over-km returns km', () => {
-    // 5 miles = ~8.05 km
-    const result = formatDistance(5)
+    const result = formatDistance(8050)
     expect(result).toMatch(/[\d.]+ km/)
   })
 })

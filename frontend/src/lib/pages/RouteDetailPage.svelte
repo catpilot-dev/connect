@@ -986,7 +986,7 @@
                 </div>
                 <div>
                   <p class="text-xs text-surface-500">Distance</p>
-                  <p class="text-surface-200">{formatDistance(route.distance)}</p>
+                  <p class="text-surface-200">{formatDistance(route.distance_m)}</p>
                 </div>
                 <div>
                   <p class="text-xs text-surface-500">Device</p>

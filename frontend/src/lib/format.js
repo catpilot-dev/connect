@@ -1,12 +1,10 @@
 // Pure formatting utilities — no side effects, no imports
 
-const MI_TO_KM = 1.609344
-
-/** Format distance in miles to readable string (metric) */
-export function formatDistance(miles) {
-  if (miles == null) return '--'
-  const km = miles * MI_TO_KM
-  return km < 1 ? `${(km * 1000).toFixed(0)} m` : `${km.toFixed(1)} km`
+/** Format distance in meters to readable string (metric) */
+export function formatDistance(meters) {
+  if (meters == null) return '--'
+  if (meters < 1000) return `${meters.toFixed(0)} m`
+  return `${(meters / 1000).toFixed(1)} km`
 }
 
 /** Format duration in minutes to readable string */

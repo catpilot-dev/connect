@@ -74,11 +74,11 @@
   const storageTotalGb    = $derived(storage ? (storage.total / 1e9).toFixed(0) : null)
   const storagePct        = $derived(storage ? Math.round((storage.used / storage.total) * 100) : 0)
   const weekRoutes        = $derived(stats?.week?.routes ?? 0)
-  const weekDistance      = $derived(stats?.week?.distance ?? 0)
+  const weekDistanceM     = $derived(stats?.week?.distance_m ?? 0)
   const weekDistanceDisplay = $derived(
     $isMetric
-      ? `${weekDistance.toFixed(0)} km`
-      : `${(weekDistance * 0.621371).toFixed(0)} mi`
+      ? `${(weekDistanceM / 1000).toFixed(0)} km`
+      : `${(weekDistanceM / 1609.344).toFixed(0)} mi`
   )
   const allRoutes = $derived(stats?.all?.routes ?? 0)
 

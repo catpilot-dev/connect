@@ -370,8 +370,8 @@ class TestDistance:
         # Check that route now has distance from coords
         for r in mock_store._routes.values():
             if r["_local_id"] == "00000042--abc123":
-                assert r["distance"] is not None
-                assert r["distance"] > 0
+                assert r["distance_m"] is not None
+                assert r["distance_m"] > 0
                 break
 
     def test_fallback_to_metadata_distance(self, mock_store):
@@ -379,9 +379,9 @@ class TestDistance:
         routes = mock_store.scan()
         for r in routes.values():
             if r["_local_id"] == "00000100--def456":
-                # total_distance_m=12300 -> ~7.6 miles
-                assert r["distance"] is not None
-                assert r["distance"] > 0
+                # total_distance_m=12300 m
+                assert r["distance_m"] is not None
+                assert r["distance_m"] > 0
                 break
 
 

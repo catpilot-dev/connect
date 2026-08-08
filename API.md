@@ -56,13 +56,15 @@ Single device info.
 ### `GET /v1.1/devices/{dongleId}/stats`
 Driving statistics with engagement breakdown.
 
-Engagement is measured by GPS distance: `engaged_miles` is the sum of cumulative distance traveled while `selfdriveState.enabled` was true, computed by interpolating the cached `coords.json` track at each engagement on/off transition. `total_miles_with_engagement` is the sum of route distance across routes that had any engagement, providing the denominator for engaged %.
+All distance fields are in **meters** (raw SI). Clients render in km or mi per the device's `IsMetric` preference.
+
+Engagement is measured by GPS distance: `engaged_m` is the sum of cumulative distance traveled while `selfdriveState.enabled` was true, computed by interpolating the cached `coords.json` track at each engagement on/off transition. `total_m_with_engagement` is the sum of route distance across routes that had any engagement, providing the denominator for engaged %.
 
 **Response:**
 ```json
 {
-  "all":  {"distance": 1234.5, "minutes": 420, "routes": 15, "engaged_miles": 1050.2, "total_miles_with_engagement": 1180.0},
-  "week": {"distance": 120.0,  "minutes": 45,  "routes": 3,  "engaged_miles": 95.7,   "total_miles_with_engagement": 110.0}
+  "all":  {"distance_m": 1989500, "minutes": 420, "routes": 15, "engaged_m": 1690000, "total_m_with_engagement": 1900000},
+  "week": {"distance_m":  193100, "minutes":  45, "routes":  3, "engaged_m":  153900, "total_m_with_engagement":  176700}
 }
 ```
 
@@ -152,7 +154,7 @@ Single route with full metadata. Triggers on-demand enrichment (GPS extraction, 
   "start_time": "2026-02-20T10:47:46",
   "end_time": "2026-02-20T10:51:46",
   "maxqlog": 3,
-  "distance": 5.2,
+  "distance_m": 8370.0,
   "start_lat": 31.2304,
   "start_lng": 121.4737,
   "end_lat": 31.2350,

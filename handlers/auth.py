@@ -93,36 +93,36 @@ async def handle_device_stats(request: web.Request) -> web.Response:
 
     week_ago = time.time() - 7 * 86400
 
-    all_stats = {"distance": 0.0, "minutes": 0, "routes": 0, "engaged_miles": 0.0, "total_miles_with_engagement": 0.0}
-    week_stats = {"distance": 0.0, "minutes": 0, "routes": 0, "engaged_miles": 0.0, "total_miles_with_engagement": 0.0}
+    all_stats = {"distance_m": 0.0, "minutes": 0, "routes": 0, "engaged_m": 0.0, "total_m_with_engagement": 0.0}
+    week_stats = {"distance_m": 0.0, "minutes": 0, "routes": 0, "engaged_m": 0.0, "total_m_with_engagement": 0.0}
 
     for r in routes.values():
         minutes = len(r["_segments"])  # ~1 min per segment
-        distance = r.get("distance") or 0
+        distance_m = r.get("distance_m") or 0
         engaged_m, total_m = _route_engaged_distance(store, r)
 
         all_stats["routes"] += 1
         all_stats["minutes"] += minutes
-        all_stats["distance"] += distance
-        # total_miles_with_engagement is the odometer of routes that had any
+        all_stats["distance_m"] += distance_m
+        # total_m_with_engagement is the odometer of routes that had any
         # engagement — exclude zero-engagement routes from both numerator and
-        # denominator so the ratio reflects "engaged share of engaged-eligible miles."
+        # denominator so the ratio reflects "engaged share of engaged-eligible distance."
         if total_m > 0 and engaged_m > 0:
-            all_stats["engaged_miles"] += engaged_m / 1609.344
-            all_stats["total_miles_with_engagement"] += total_m / 1609.344
+            all_stats["engaged_m"] += engaged_m
+            all_stats["total_m_with_engagement"] += total_m
 
         if r.get("create_time", 0) >= week_ago:
             week_stats["routes"] += 1
             week_stats["minutes"] += minutes
-            week_stats["distance"] += distance
+            week_stats["distance_m"] += distance_m
             if total_m > 0 and engaged_m > 0:
-                week_stats["engaged_miles"] += engaged_m / 1609.344
-                week_stats["total_miles_with_engagement"] += total_m / 1609.344
+                week_stats["engaged_m"] += engaged_m
+                week_stats["total_m_with_engagement"] += total_m
 
     for s in (all_stats, week_stats):
-        s["distance"] = round(s["distance"], 1)
-        s["engaged_miles"] = round(s["engaged_miles"], 1)
-        s["total_miles_with_engagement"] = round(s["total_miles_with_engagement"], 1)
+        s["distance_m"] = round(s["distance_m"], 1)
+        s["engaged_m"] = round(s["engaged_m"], 1)
+        s["total_m_with_engagement"] = round(s["total_m_with_engagement"], 1)
 
     return web.json_response({"all": all_stats, "week": week_stats})
 

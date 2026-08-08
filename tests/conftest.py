@@ -130,7 +130,7 @@ def sample_route_dict():
         "git_branch": "bmw-master",
         "git_commit": "abcdef1",
         "is_public": True,
-        "distance": 3.2,
+        "distance_m": 5200.0,
         "maxqlog": 5,
         "platform": "BMW_E90",
         "start_lat": 31.23,
