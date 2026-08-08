@@ -7,8 +7,9 @@
 
   let routes = $state([])
   let loading = $state(true)
-  let page = $state(0)
-  let hasNext = $state(false)
+  let loadingMore = $state(false)
+  let hasMore = $state(false)
+  let sentinel = $state(null)
   let storage = $state(null)
   let health = $state(null)
   let error = $state(null)
@@ -16,7 +17,20 @@
   let dateFrom = $state('')
   let dateTo = $state('')
 
-  const PAGE_SIZE = 20
+  // Index into the active tab's DATE_LADDER, and whether the user has set the
+  // range themselves — an explicit range is never auto-widened.
+  let rung = $state(0)
+  let datesTouched = $state(false)
+
+  // Bumped on every tab/date change so a late in-flight fetch can be discarded
+  // instead of appending stale rows onto the freshly reset list.
+  let requestToken = 0
+
+  // Server rows consumed so far. Tracked separately from routes.length because
+  // a de-duplicated row still advances the server-side offset.
+  let nextOffset = 0
+
+  const CHUNK_SIZE = 50
   const TABS = [
     { id: 'recent', label: 'Recent' },
     { id: 'saved', label: 'Saved' },
@@ -38,11 +52,24 @@
     return d.toISOString().slice(0, 10)
   }
 
+  // Effectively unbounded — predates any comma 3 footage.
+  const EPOCH = '2020-01-01'
+
+  // Widening ladder of `from` bounds per tab. Rung 0 is the tab's opening
+  // window; when infinite scroll runs that window dry we step to the next rung
+  // and keep loading, so the default filter never caps how far back you scroll.
+  const DATE_LADDER = {
+    recent:   [() => daysAgo(30),  () => monthsAgo(6), () => EPOCH],
+    saved:    [() => EPOCH],
+    all:      [() => monthsAgo(6), () => EPOCH],
+    recycled: [() => EPOCH],
+  }
+
   const TAB_DEFAULTS = {
-    recent:   { from: () => daysAgo(30),  to: () => todayStr() },
-    saved:    { from: () => '2020-01-01', to: () => todayStr() },
-    all:      { from: () => monthsAgo(6), to: () => todayStr() },
-    recycled: { from: () => '2020-01-01', to: () => todayStr() },
+    recent:   { from: () => DATE_LADDER.recent[0](),   to: () => todayStr() },
+    saved:    { from: () => DATE_LADDER.saved[0](),    to: () => todayStr() },
+    all:      { from: () => DATE_LADDER.all[0](),      to: () => todayStr() },
+    recycled: { from: () => DATE_LADDER.recycled[0](), to: () => todayStr() },
   }
 
   function applyTabDefaults(tabId) {
@@ -72,25 +99,31 @@
     return d.getTime() / 1000
   }
 
+  // Over-fetch by one row so we can tell whether more rows exist without a
+  // second request or a response-shape change.
+  function listOpts(offset) {
+    const opts = { limit: CHUNK_SIZE + 1, offset, filter: activeTab }
+    const afterGps = dateToEpoch(dateFrom)
+    const beforeGps = dateToEpoch(dateTo, true)
+    if (afterGps) opts.afterGps = afterGps
+    if (beforeGps) opts.beforeGps = beforeGps
+    return opts
+  }
+
   async function loadRoutes(id) {
     loading = true
     error = null
+    const token = requestToken
     try {
-      // Over-fetch by one row so we can tell whether a next page exists
-      // without a second request or a response-shape change.
-      const opts = { limit: PAGE_SIZE + 1, offset: page * PAGE_SIZE, filter: activeTab }
-      const afterGps = dateToEpoch(dateFrom)
-      const beforeGps = dateToEpoch(dateTo, true)
-      if (afterGps) opts.afterGps = afterGps
-      if (beforeGps) opts.beforeGps = beforeGps
-
       const [data, st, hl] = await Promise.all([
-        fetchRoutes(id, opts),
+        fetchRoutes(id, listOpts(0)),
         fetchStorage(),
         fetchHealth(),
       ])
-      hasNext = data.length > PAGE_SIZE
-      routes = data.slice(0, PAGE_SIZE)
+      if (token !== requestToken) return
+      hasMore = data.length > CHUNK_SIZE
+      routes = data.slice(0, CHUNK_SIZE)
+      nextOffset = routes.length
       storage = st
       health = hl
       storageInfo.set(st)
@@ -98,17 +131,91 @@
       if (activeTab === 'recent' || activeTab === 'all') {
         scanPendingRoutes(routes)
       }
+      // The opening window may hold less than a full chunk, in which case no
+      // sentinel renders and nothing would ever trigger a widen — so kick it
+      // off here rather than leaving the first screen capped.
+      if (!hasMore) loadMore(true)
     } catch (e) {
+      if (token !== requestToken) return
       error = e.message
       loading = false
     }
   }
 
-  function goToPage(next) {
-    if (!$dongleId) return
-    page = next
-    window.scrollTo({ top: 0 })
-    loadRoutes($dongleId)
+  // Step to the next-wider date window. Returns false when the ladder is spent
+  // or the user set the range themselves.
+  function widenWindow() {
+    const ladder = DATE_LADDER[activeTab]
+    if (datesTouched || rung >= ladder.length - 1) return false
+    rung++
+    dateFrom = ladder[rung]()
+    return true
+  }
+
+  // Pull the next chunk. A chunk that comes back short means the current date
+  // window ran dry, not that the list is over — widen and keep pulling until a
+  // chunk fills or the ladder is spent. Widening only ever adds *older* routes,
+  // which sort to the tail, so the loaded prefix is stable and `routes.length`
+  // stays a valid offset across a widen.
+  async function loadMore(windowExhausted = false) {
+    if (loading || loadingMore || !$dongleId) return
+    loadingMore = true
+    const token = requestToken
+    let exhausted = windowExhausted
+    try {
+      while (true) {
+        if (exhausted && !widenWindow()) {
+          hasMore = false
+          return
+        }
+        const data = await fetchRoutes($dongleId, listOpts(nextOffset))
+        if (token !== requestToken) return
+        const chunk = data.slice(0, CHUNK_SIZE)
+        nextOffset += chunk.length
+        // Pending placeholders ignore the date filter, so an old-counter pending
+        // row can sit at the tail of the narrow window and mid-list in the wider
+        // one — breaking the prefix assumption above. Drop rows we already hold
+        // rather than throwing on a duplicate key in the keyed {#each}.
+        const seen = new Set(routes.map(r => r.local_id))
+        const fresh = chunk.filter(r => !seen.has(r.local_id))
+        if (fresh.length) {
+          routes = [...routes, ...fresh]
+          if (activeTab === 'recent' || activeTab === 'all') {
+            scanPendingRoutes(fresh)
+          }
+        }
+        if (data.length > CHUNK_SIZE) {
+          hasMore = true
+          return
+        }
+        exhausted = true
+      }
+    } catch (e) {
+      // Leave hasMore set. IntersectionObserver only fires on transitions, so
+      // this retries when the user scrolls away and back rather than looping.
+      console.error('loadMore error:', e)
+    } finally {
+      loadingMore = false
+    }
+  }
+
+  // Start the next chunk slightly before the bottom of the list is reached.
+  $effect(() => {
+    if (!sentinel) return
+    const io = new IntersectionObserver(
+      (entries) => { if (entries[0].isIntersecting) loadMore() },
+      { rootMargin: '400px' },
+    )
+    io.observe(sentinel)
+    return () => io.disconnect()
+  })
+
+  function resetList() {
+    requestToken++
+    hasMore = false
+    loadingMore = false
+    rung = 0
+    datesTouched = false
   }
 
   function switchTab(tabId) {
@@ -116,20 +223,20 @@
     activeTab = tabId
     loading = true
     routes = []
-    page = 0
-    hasNext = false
+    resetList()
     applyTabDefaults(tabId)
     if ($dongleId) loadRoutes($dongleId)
   }
 
   function resetDates() {
-    page = 0
+    resetList()
     applyTabDefaults(activeTab)
     if ($dongleId) loadRoutes($dongleId)
   }
 
   function onDateChange() {
-    page = 0
+    resetList()
+    datesTouched = true
     if ($dongleId) loadRoutes($dongleId)
   }
 
@@ -173,6 +280,18 @@
       : ''
   )
 </script>
+
+{#snippet skeletonCard()}
+  <div class="card w-full animate-pulse">
+    <div class="px-3 pt-2.5">
+      <div class="h-3 w-40 bg-surface-700 rounded"></div>
+    </div>
+    <div class="px-3 py-2.5 flex gap-3">
+      <div class="h-4 w-32 bg-surface-700 rounded"></div>
+      <div class="h-4 w-20 bg-surface-700 rounded ml-auto"></div>
+    </div>
+  </div>
+{/snippet}
 
 <div class="mx-auto w-full max-w-3xl px-4 py-4 space-y-3">
   <!-- Storage warning banner -->
@@ -268,15 +387,7 @@
   {#if loading}
     <div class="space-y-3">
       {#each Array(5) as _}
-        <div class="card w-full animate-pulse">
-          <div class="px-3 pt-2.5">
-            <div class="h-3 w-40 bg-surface-700 rounded"></div>
-          </div>
-          <div class="px-3 py-2.5 flex gap-3">
-            <div class="h-4 w-32 bg-surface-700 rounded"></div>
-            <div class="h-4 w-20 bg-surface-700 rounded ml-auto"></div>
-          </div>
-        </div>
+        {@render skeletonCard()}
       {/each}
     </div>
   {:else if error}
@@ -298,25 +409,14 @@
       <RouteCard {route} />
     {/each}
 
-    <!-- Previous / Next pager -->
-    {#if page > 0 || hasNext}
-      <div class="flex items-center justify-center gap-3 py-4">
-        <button
-          class="btn-ghost"
-          onclick={() => goToPage(page - 1)}
-          disabled={page === 0}
-        >
-          ‹ Previous
-        </button>
-        <span class="text-sm text-surface-500 tabular-nums">Page {page + 1}</span>
-        <button
-          class="btn-ghost"
-          onclick={() => goToPage(page + 1)}
-          disabled={!hasNext}
-        >
-          Next ›
-        </button>
-      </div>
+    <!-- Infinite scroll: the sentinel pulls in the next chunk before the bottom -->
+    {#if hasMore}
+      <div bind:this={sentinel} aria-hidden="true"></div>
+    {/if}
+    {#if loadingMore}
+      {#each Array(2) as _}
+        {@render skeletonCard()}
+      {/each}
     {/if}
   {/if}
 </div>
