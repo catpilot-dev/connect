@@ -10,6 +10,7 @@ The browser Canvas just draws pre-projected polygons — no projection math in J
 import asyncio
 import json
 import logging
+from collections import OrderedDict
 
 import numpy as np
 from aiohttp import web
@@ -180,7 +181,13 @@ CANVAS_W = 1928.0
 CANVAS_H = 1208.0
 
 
-_HUD_DATA_CACHE = {}  # local_id → {seg → frames}
+# (local_id, seg) → (frames, calib_rpy, height), LRU-evicted. Each cached
+# segment holds ~300 pre-projected frames (1-2 MB), and the server shares RAM
+# with the driving stack, so the cache must stay bounded. Calibration is kept
+# per entry so later segments can start from the nearest earlier segment's
+# calibration instead of dropping frames until liveCalibration reappears.
+_HUD_DATA_CACHE = OrderedDict()
+_HUD_CACHE_MAX_SEGMENTS = 32
 
 
 def _extract_hud_segment(qlog_path: str, seg_num: int, calib_rpy=None, height=None):
@@ -348,37 +355,41 @@ def _extract_hud_data(store, fullname: str, start_seg: int, end_seg: int) -> lis
     if not local_id:
         return []
 
-    if local_id not in _HUD_DATA_CACHE:
-        _HUD_DATA_CACHE[local_id] = {}
-    seg_cache = _HUD_DATA_CACHE[local_id]
-
     all_frames = []
     calib_rpy = None
     height = None
 
-    # Check if earlier segments have calibration cached
-    for s in sorted(seg_cache.keys()):
-        if s < start_seg and seg_cache[s]:
-            # Use last frame's calibration as starting point
-            last = seg_cache[s][-1]
-            if "model" in last:
-                break
+    # Seed calibration from the nearest earlier cached segment of this route,
+    # so a cold seek into segment N doesn't drop frames until liveCalibration.
+    best_seg = -1
+    for (lid, s), (_frames, c, h) in _HUD_DATA_CACHE.items():
+        if lid == local_id and s < start_seg and c is not None and s > best_seg:
+            best_seg, calib_rpy, height = s, c, h
 
     for seg in range(start_seg, end_seg + 1):
-        if seg in seg_cache:
-            all_frames.extend(seg_cache[seg])
+        key = (local_id, seg)
+        cached = _HUD_DATA_CACHE.get(key)
+        if cached is not None:
+            _HUD_DATA_CACHE.move_to_end(key)
+            frames, seg_calib, seg_height = cached
+            all_frames.extend(frames)
+            if seg_calib is not None:
+                calib_rpy, height = seg_calib, seg_height
             continue
 
         # Use rlog (not qlog) — modelV2 and liveCalibration are only in rlogs
         qlog = store.resolve_segment_path(fullname, seg, "rlog.zst")
         if not qlog:
             qlog = store.resolve_segment_path(fullname, seg, "rlog")
-        if not qlog:
-            seg_cache[seg] = []
-            continue
+        if qlog:
+            frames, calib_rpy, height = _extract_hud_segment(str(qlog), seg, calib_rpy, height)
+        else:
+            frames = []
 
-        frames, calib_rpy, height = _extract_hud_segment(str(qlog), seg, calib_rpy, height)
-        seg_cache[seg] = frames
+        _HUD_DATA_CACHE[key] = (frames, calib_rpy, height)
+        _HUD_DATA_CACHE.move_to_end(key)
+        while len(_HUD_DATA_CACHE) > _HUD_CACHE_MAX_SEGMENTS:
+            _HUD_DATA_CACHE.popitem(last=False)
         all_frames.extend(frames)
 
     return all_frames

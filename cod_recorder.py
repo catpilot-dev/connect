@@ -129,12 +129,17 @@ def cleanup() -> None:
     global _ffmpeg_proc, _writer_queue, _writer_thread
 
     if _writer_queue is not None:
+        # Blocking put: the queue drains as ffmpeg consumes, so the sentinel
+        # must not be dropped on a momentarily full queue — losing it leaves
+        # the writer alive and racing the stdin close below. The timeout only
+        # triggers if the writer is already dead with a full queue, in which
+        # case the join returns immediately.
         try:
-            _writer_queue.put_nowait(None)
+            _writer_queue.put(None, timeout=10)
         except queue.Full:
             pass
         if _writer_thread is not None:
-            _writer_thread.join(timeout=2)
+            _writer_thread.join(timeout=30)
 
     if _ffmpeg_proc is not None:
         try:
