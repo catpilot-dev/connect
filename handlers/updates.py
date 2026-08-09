@@ -285,12 +285,14 @@ async def _apply_cod_update(release_info):
         else:
             src = staging
 
-        # Copy key files and directories into COD_DIR
-        for item in ('handlers', 'static', 'VERSION'):
+        # Copy everything the release ships (handlers/, static/, root modules,
+        # VERSION, ...). A fixed whitelist here once made rolling updates
+        # half-apply: a release touching server.py would bump VERSION while
+        # leaving the old code running. Device-local state not present in the
+        # tarball is untouched.
+        for item in os.listdir(src):
             src_item = os.path.join(src, item)
             dst_item = os.path.join(COD_DIR, item)
-            if not os.path.exists(src_item):
-                continue
             if os.path.isdir(src_item):
                 if os.path.exists(dst_item):
                     shutil.rmtree(dst_item)
