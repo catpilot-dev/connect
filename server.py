@@ -13,6 +13,7 @@ Usage:
 import argparse
 import asyncio
 import logging
+import socket
 from pathlib import Path
 
 from aiohttp import web
@@ -360,6 +361,20 @@ def create_app(data_dir: str, static_dir: str) -> web.Application:
     return app
 
 
+def _listen_socket(host: str, port: int) -> socket.socket:
+    """Bound, listening socket for one host/port (IPv6 kept single-stack so the
+    IPv4 socket on the same port can bind alongside it)."""
+    family = socket.AF_INET6 if ":" in host else socket.AF_INET
+    sock = socket.socket(family, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    if family == socket.AF_INET6:
+        sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+    sock.bind((host, port))
+    sock.listen(128)
+    sock.set_inheritable(True)
+    return sock
+
+
 def main():
     parser = argparse.ArgumentParser(description="Connect on Device - comma-compatible local server")
     parser.add_argument("--data-dir", default=DEFAULT_DATA_DIR,
@@ -376,17 +391,34 @@ def main():
 
     static_dir = args.static_dir or str(Path(__file__).parent / "static")
 
-    # Listen on both IPv4 and IPv6 by default so hotspot (IPv6-only carriers)
-    # and LAN (IPv4) both work.  A single explicit --host overrides to that only.
-    host = args.host or ["0.0.0.0", "::"]
+    # IPv4 only. --host takes an explicit address (including an IPv6 one) for
+    # setups that need something else.
+    host = args.host or "0.0.0.0"
 
     logger.info("Starting Connect on Device (comma-compatible API)")
     logger.info("  Data dir:   %s", args.data_dir)
     logger.info("  Static dir: %s", static_dir)
-    logger.info("  Listening:  http://*:%d  (IPv4 + IPv6)", args.port)
 
     app = create_app(args.data_dir, static_dir)
-    web.run_app(app, host=host, port=args.port, print=None)
+
+    # Serve the legacy :8082 alongside the primary port so bookmarks and
+    # scripts from before the port-80 switch keep working. Best-effort: a
+    # busy compatibility port must never stop the real listener from starting.
+    hosts = host if isinstance(host, list) else [host]
+    ports = [args.port] + ([DEFAULT_PORT] if args.port != DEFAULT_PORT else [])
+    socks = []
+    for port in ports:
+        for h in hosts:
+            try:
+                socks.append(_listen_socket(h, port))
+            except OSError as e:
+                if port == args.port:
+                    raise
+                logger.warning("  Compatibility port %d unavailable on %s: %s", port, h, e)
+    logger.info("  Listening:  %s  (IPv4 + IPv6)",
+                "  ".join(f"http://*:{p}" for p in sorted({s.getsockname()[1] for s in socks})))
+
+    web.run_app(app, sock=socks, print=None)
 
 
 if __name__ == "__main__":

@@ -49,9 +49,12 @@ _MUTATING = {"POST", "PUT", "PATCH", "DELETE"}
 _ONROAD_FORBIDDEN_READ = re.compile(
     r"^/v1/route/[^/]+/("
     r"hud_data"          # rlog extraction, seconds of CPU per segment
-    r"|frame_times/"     # rlog parse per segment
+    r"|frame"            # frame extraction; also frame_times/ rlog parse
     r"|signals/"         # rlog parse per segment
     r"|download"         # tars whole-route media
+    r"|camera/"          # HEVC -> mp4 mux (ffmpeg)
+    r"|mjpeg"            # continuous ffmpeg transcode
+    r"|qcamera"          # qcamera.m3u8 + qcamera_hls/ segments (ffmpeg)
     r")"
 )
 

@@ -594,6 +594,12 @@ class TestOnroadGuard:
         "/v1/route/000003e5--c904a8df49/frame_times/0",
         "/v1/route/000003e5--c904a8df49/signals/catalog",
         "/v1/route/000003e5--c904a8df49/download",
+        # ffmpeg-backed video: decoding/transcoding competes with the car
+        "/v1/route/000003e5--c904a8df49/frame",
+        "/v1/route/000003e5--c904a8df49/camera/fcamera/0",
+        "/v1/route/000003e5--c904a8df49/mjpeg",
+        "/v1/route/000003e5--c904a8df49/qcamera.m3u8",
+        "/v1/route/000003e5--c904a8df49/qcamera_hls/index.m3u8",
     ]
 
     @pytest.mark.asyncio

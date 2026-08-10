@@ -17,7 +17,22 @@ import sys
 import threading
 import time
 
-from config import OPENPILOT_DIR, REALDATA_DIR
+from config import OPENPILOT_DIR, PARAMS_DIR, REALDATA_DIR
+
+# Screencast holds DRM master, which requires stopping the openpilot manager —
+# so it must never outlive the parked state it was started in. Starting it is
+# already refused onroad by the API guard; this covers the other direction:
+# the car driving off while a cast is running. Checked once a second from both
+# render loops, restoring the manager the moment IsOnroad flips.
+ONROAD_POLL_FRAMES = 20
+
+
+def _is_onroad() -> bool:
+    try:
+        with open(f"{PARAMS_DIR}/IsOnroad", "rb") as f:
+            return f.read().strip() == b"1"
+    except Exception:
+        return False
 CONTROL_PORT = 8090
 FPS = 20
 SCREEN_W = 2160
@@ -141,8 +156,16 @@ class Screencast:
         print("DRM window acquired, waiting for PLAY command...", flush=True)
 
         # Show black screen while waiting for PLAY command
+        idle_frames = 0
         while not self._stop_event.is_set():
             if rl.window_should_close():
+                rl.close_window()
+                _start_manager()
+                return
+
+            idle_frames += 1
+            if idle_frames % ONROAD_POLL_FRAMES == 0 and _is_onroad():
+                print("Vehicle went onroad — ending screencast", flush=True)
                 rl.close_window()
                 _start_manager()
                 return
@@ -182,8 +205,14 @@ class Screencast:
         frame_gen = _frame_generator(self._route_id, self._segment, self._offset)
         paused = False
 
+        frames = 0
         try:
             while not rl.window_should_close() and not self._stop_event.is_set():
+                frames += 1
+                if frames % ONROAD_POLL_FRAMES == 0 and _is_onroad():
+                    print("Vehicle went onroad — ending screencast", flush=True)
+                    break
+
                 # Check for commands
                 cmd = self._get_command()
                 if cmd:
