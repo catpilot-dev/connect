@@ -37,6 +37,7 @@ DOWNLOAD_FILES = {
 MIN_FREE_BYTES = 20 * 1024 * 1024 * 1024   # 20 GB — phase 1 threshold
 EMERGENCY_BYTES = 10 * 1024 * 1024 * 1024   # 10 GB — phase 2 (emergency) threshold
 RECYCLE_TTL = 7 * 86400                      # 7 days before recycled routes auto-purge
+ACTIVE_WRITE_WINDOW = 300                    # 5 min — a route touched this recently may be recording
 
 
 def get_storage_info(store) -> dict:
@@ -98,7 +99,8 @@ def run_cleanup(store) -> dict:
     ]
     for lid, hide_time in expired:
         age_days = (now - hide_time) / 86400
-        _delete_route_from_disk(store, lid)
+        if not _delete_route_from_disk(store, lid):
+            continue
         deleted.append({"route": lid, "reason": "recycled_expired", "age_days": round(age_days, 1)})
         logger.info("Cleanup: purged expired recycled route %s (%.1f days old)", lid, age_days)
 
@@ -122,7 +124,8 @@ def run_cleanup(store) -> dict:
         age_days = (now - mtime) / 86400
         if now - mtime <= RECYCLE_TTL:
             continue  # keep recent stubs briefly (may be mid-recording)
-        _delete_route_from_disk(store, lid)
+        if not _delete_route_from_disk(store, lid):
+            continue
         deleted.append({"route": lid, "reason": "stub_expired", "age_days": round(age_days, 1)})
         logger.info("Cleanup: purged aged stub route %s (%.1f days old)", lid, age_days)
 
@@ -142,7 +145,8 @@ def run_cleanup(store) -> dict:
             lid = r["_local_id"]
             if lid in store._preserved or has_xattr_preserve(store, lid):
                 continue
-            _delete_route_from_disk(store, lid)
+            if not _delete_route_from_disk(store, lid):
+                continue
             deleted.append({"route": lid, "reason": "recycled_low_storage",
                             "recycled_reason": r.get("recycled_reason")})
             logger.info("Cleanup: purged recycled route %s (%s, low storage)",
@@ -173,7 +177,8 @@ def run_cleanup(store) -> dict:
         candidates.sort(key=lambda lid: (_has_bookmarks(lid), _route_counter(lid)))
 
         for lid in candidates:
-            _delete_route_from_disk(store, lid)
+            if not _delete_route_from_disk(store, lid):
+                continue
             deleted.append({"route": lid, "reason": "low_storage"})
             logger.info("Cleanup: deleted normal route %s (low storage)", lid)
             free = _free_bytes(store)
@@ -188,7 +193,8 @@ def run_cleanup(store) -> dict:
         for lid in saved:
             if has_xattr_preserve(store, lid):
                 continue
-            _delete_route_from_disk(store, lid)
+            if not _delete_route_from_disk(store, lid):
+                continue
             deleted.append({"route": lid, "reason": "emergency"})
             logger.warning("Cleanup: deleted SAVED route %s (emergency, free < 10GB)", lid)
             free = _free_bytes(store)
@@ -373,8 +379,48 @@ def _cleanup_media_cache(cache_dir: str):
             pass
 
 
+# Files loggerd owns. Segment *directory* mtime is not usable: COD writes its
+# own events.json/coords.json caches into the same directories, so viewing an
+# old route would otherwise make it look like a live recording.
+_LOGGERD_FILES = ("rlog", "rlog.zst", "qlog", "qlog.zst",
+                  "fcamera.hevc", "ecamera.hevc", "dcamera.hevc", "qcamera.ts")
+
+
+def is_being_written(store, local_id: str) -> bool:
+    """True if loggerd still appears to be recording into this route.
+
+    The drive in progress looks exactly like an "invalid" stub for its first
+    minute — maxqlog 0 and no distance yet — so it lands in the recycle bin
+    that low-storage reclaim empties, and nothing else in this module knows
+    about driving state. Requires both: the vehicle is onroad (loggerd only
+    records then) and a loggerd-owned file was written within the window.
+    """
+    info = store._raw.get(local_id)
+    if not info or not store._is_onroad():
+        return False
+    now = time.time()
+    for seg in info["segments"]:
+        seg_path = Path(seg["path"])
+        for name in _LOGGERD_FILES:
+            try:
+                if now - (seg_path / name).stat().st_mtime <= ACTIVE_WRITE_WINDOW:
+                    return True
+            except OSError:
+                continue
+    return False
+
+
 def _delete_route_from_disk(store, local_id: str):
-    """Remove all segment directories for a route from disk and clean up state."""
+    """Remove all segment directories for a route from disk and clean up state.
+
+    Refuses to touch a route that is still being written — COD must never
+    destroy the drive in progress. Enforced here rather than per phase so no
+    reclaim path can forget it (same reasoning as the onroad middleware).
+    """
+    if is_being_written(store, local_id):
+        logger.warning("Cleanup: refused to delete %s — still being recorded", local_id)
+        return False
+
     info = store._raw.get(local_id)
     if info:
         for seg in info["segments"]:
@@ -386,6 +432,7 @@ def _delete_route_from_disk(store, local_id: str):
     store._preserved.discard(local_id)
     store._raw.pop(local_id, None)
     store._metadata.pop(local_id, None)
+    return True
 
 
 def build_download_tar(store, local_id: str, file_types: list[str], segments: list[int] | None = None) -> io.BytesIO | None:

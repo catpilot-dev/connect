@@ -586,12 +586,40 @@ class TestOnroadGuard:
             resp = await getattr(c, method)(path, json={})
         assert resp.status != 409, f"{path} was refused while offroad"
 
+    # Reads that cost seconds of device CPU (rlog parsing, whole-route tars).
+    # They change nothing, but they compete with the driving stack — and the
+    # HUD overlay prefetch issues them for every segment of a route.
+    BLOCKED_READS = [
+        "/v1/route/000003e5--c904a8df49/hud_data?start=0&end=60",
+        "/v1/route/000003e5--c904a8df49/frame_times/0",
+        "/v1/route/000003e5--c904a8df49/signals/catalog",
+        "/v1/route/000003e5--c904a8df49/download",
+    ]
+
     @pytest.mark.asyncio
-    async def test_reads_are_never_blocked(self, client):
+    @pytest.mark.parametrize("path", BLOCKED_READS)
+    async def test_heavy_reads_refused_while_onroad(self, client, path):
         c = await client
         with patch("handlers.middleware.read_param", return_value="1"):
-            resp = await c.get("/v1/storage")
-        assert resp.status == 200
+            resp = await c.get(path)
+        assert resp.status == 409, f"{path} was not refused while onroad"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("path", BLOCKED_READS)
+    async def test_heavy_reads_allowed_while_offroad(self, client, path):
+        c = await client
+        with patch("handlers.middleware.read_param", return_value="0"):
+            resp = await c.get(path)
+        assert resp.status != 409, f"{path} was refused while offroad"
+
+    @pytest.mark.asyncio
+    async def test_light_reads_are_never_blocked(self, client):
+        """Browsing routes while a passenger must keep working."""
+        c = await client
+        with patch("handlers.middleware.read_param", return_value="1"):
+            for path in ("/v1/storage", "/v1/devices/test123/routes"):
+                resp = await c.get(path)
+                assert resp.status != 409, path
 
     @pytest.mark.asyncio
     async def test_route_management_still_allowed_onroad(self, client):

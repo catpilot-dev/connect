@@ -273,3 +273,96 @@ class TestDeleteRouteFromDisk:
     def test_nonexistent_route_is_noop(self, mock_store):
         from storage_management import _delete_route_from_disk
         _delete_route_from_disk(mock_store, "nonexistent--route")  # must not raise
+
+
+# ─── Active recording must survive every reclaim phase ──────────────
+
+class TestActiveRecordingGuard:
+    """The drive being recorded looks like an "invalid" stub for its first
+    minute (maxqlog 0, no distance), so it lands in the recycle bin that
+    low-storage reclaim empties. Deleting it would destroy the drive as
+    loggerd writes it — with no onroad check anywhere in this module."""
+
+    def test_only_active_while_onroad_and_freshly_logged(self, mock_store):
+        import os
+        from storage_management import ACTIVE_WRITE_WINDOW, is_being_written
+        lid = _all_lids(mock_store)[0]
+
+        # Offroad: loggerd is not recording, whatever the mtimes say
+        assert is_being_written(mock_store, lid) is False
+
+        with patch.object(type(mock_store), "_is_onroad", staticmethod(lambda: True)):
+            assert is_being_written(mock_store, lid) is True
+            old = time.time() - ACTIVE_WRITE_WINDOW - 60
+            for p in _seg_paths(mock_store, lid):
+                for f in p.iterdir():
+                    os.utime(f, (old, old))
+            assert is_being_written(mock_store, lid) is False
+
+    def test_cod_cache_writes_do_not_mark_route_active(self, mock_store):
+        """Enrichment writes events.json/coords.json into segment dirs — that
+        must not make a finished route look like a live recording."""
+        import os
+        from storage_management import ACTIVE_WRITE_WINDOW, is_being_written
+        lid = _all_lids(mock_store)[0]
+        old = time.time() - ACTIVE_WRITE_WINDOW - 60
+        for p in _seg_paths(mock_store, lid):
+            for f in p.iterdir():
+                os.utime(f, (old, old))
+            (p / "events.json").write_text("[]")  # fresh COD cache write
+
+        with patch.object(type(mock_store), "_is_onroad", staticmethod(lambda: True)):
+            assert is_being_written(mock_store, lid) is False
+
+    def test_recycled_reclaim_spares_active_recording(self, mock_store):
+        """Phase 1a: free < 20GB empties the recycle bin — but not a route
+        still being written."""
+        lid = _all_lids(mock_store)[0]
+        seg_paths = _seg_paths(mock_store, lid)
+        for p in seg_paths:
+            p.touch()
+        mock_store._hidden[lid] = time.time()  # in the bin, inside its grace
+
+        with patch("storage_management.shutil.disk_usage",
+                   return_value=_make_disk_usage(MIN_FREE_BYTES - 1)), \
+             patch.object(type(mock_store), "_is_onroad", staticmethod(lambda: True)):
+            result = run_cleanup(mock_store)
+
+        assert not any(d["route"] == lid for d in result["deleted"])
+        assert lid in mock_store._raw
+        for p in seg_paths:
+            assert p.exists()
+
+    def test_expired_recycled_route_still_spared_while_writing(self, mock_store):
+        """Even a 7-day-expired bin entry is spared if it is being written —
+        the guard is in the delete path, so no phase can bypass it."""
+        lid = _all_lids(mock_store)[0]
+        for p in _seg_paths(mock_store, lid):
+            p.touch()
+        mock_store._hidden[lid] = time.time() - RECYCLE_TTL - 1
+
+        with patch("storage_management.shutil.disk_usage",
+                   return_value=_make_disk_usage(MIN_FREE_BYTES + 1)), \
+             patch.object(type(mock_store), "_is_onroad", staticmethod(lambda: True)):
+            result = run_cleanup(mock_store)
+
+        assert not any(d["route"] == lid for d in result["deleted"])
+        assert lid in mock_store._raw
+
+    def test_stale_routes_still_reclaimed(self, mock_store):
+        """The guard must not stop normal reclaim of routes nobody is writing."""
+        import os
+        lid = _all_lids(mock_store)[0]
+        old = time.time() - RECYCLE_TTL - 60
+        for p in _seg_paths(mock_store, lid):
+            for f in p.iterdir():
+                os.utime(f, (old, old))
+            os.utime(p, (old, old))
+        mock_store._hidden[lid] = old
+
+        with patch("storage_management.shutil.disk_usage",
+                   return_value=_make_disk_usage(MIN_FREE_BYTES + 1)):
+            result = run_cleanup(mock_store)
+
+        assert any(d["route"] == lid for d in result["deleted"])
+        assert lid not in mock_store._raw
