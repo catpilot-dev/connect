@@ -113,6 +113,7 @@ from .dashboard import (
 
 from .hud_data import (
     handle_hud_data,
+    handle_hud_emblem,
 )
 
 from .signals import (

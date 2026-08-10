@@ -118,28 +118,32 @@
     ctx.closePath()
   }
 
-  function drawSpeedLimitSign(ctx, sx, sy, sl) {
+  function drawSpeedLimitSign(ctx, sx, sy, sl, metric) {
     if (!sl?.limit) return
-    // Vienna-style sign below the MAX box; faded while unconfirmed
-    const cx = 160 * sx
-    const cy = (45 + 204 + 130) * sy
-    const r = 85 * sx
+    // Exact geometry from speedlimitd/ui_overlay.py: sign diameter matches
+    // the MAX block width, centered below it with a 30px gap. Red circle
+    // rgb(220,30,30), white inner at 0.8r (Vienna border = 1/10 diameter),
+    // bold 84px black number; 50% alpha until confirmed.
+    const r = (metric ? 100 : 86) * sx
+    const maxW = (metric ? 200 : 172) * sx
+    const maxX = 60 * sx + ((172 - (metric ? 200 : 172)) / 2) * sx
+    const cx = maxX + maxW / 2
+    const cy = (45 + 204 + 30) * sy + r
     ctx.save()
     ctx.globalAlpha = sl.confirmed ? 1.0 : 0.5
     ctx.beginPath()
     ctx.arc(cx, cy, r, 0, Math.PI * 2)
+    ctx.fillStyle = 'rgb(220, 30, 30)'
+    ctx.fill()
+    ctx.beginPath()
+    ctx.arc(cx, cy, r * 0.8, 0, Math.PI * 2)
     ctx.fillStyle = 'white'
     ctx.fill()
-    ctx.lineWidth = r * 0.28
-    ctx.strokeStyle = 'rgba(201, 34, 49, 1)'
-    ctx.beginPath()
-    ctx.arc(cx, cy, r - ctx.lineWidth / 2, 0, Math.PI * 2)
-    ctx.stroke()
     ctx.fillStyle = 'black'
-    ctx.font = `bold ${Math.round(r * 0.95)}px system-ui, -apple-system, sans-serif`
+    ctx.font = `bold ${Math.round(84 * sy)}px system-ui, -apple-system, sans-serif`
     ctx.textAlign = 'center'
     ctx.textBaseline = 'middle'
-    ctx.fillText(String(sl.limit), cx, cy + r * 0.05)
+    ctx.fillText(String(sl.limit), cx, cy)
     ctx.restore()
   }
 
@@ -186,29 +190,49 @@
     ctx.restore()
   }
 
-  function drawBmwEmblem(ctx, w, sx, sy, engaged) {
-    const r = 62 * sx
-    const cx = w - 60 * sx - r
-    const cy = 45 * sy + r
+  // Brand emblem: the same PNGs ui_mod draws onroad, served by COD from the
+  // plugins repo. Cached per brand+style; drawn once loaded.
+  const emblemCache = new Map()
+  function getEmblem(brand, style) {
+    const key = `${brand}/${style}`
+    let img = emblemCache.get(key)
+    if (!img) {
+      img = new Image()
+      img.src = `/v1/hud/emblem/${brand}?style=${style}`
+      emblemCache.set(key, img)
+    }
+    return img.complete && img.naturalWidth > 0 ? img : null
+  }
+
+  function drawBrandEmblem(ctx, w, sx, sy, frame) {
+    if (!frame.brand) return
+    // ExpButton geometry: 192px button at (w - 30 - 192, 30); 30%-black
+    // circle; green #4CAF50 ring (width 12) when lane_keeping is anchored
+    // while engaged; color emblem in experimental mode, white icon otherwise.
+    const size = 192 * sx
+    const r = size / 2
+    const cx = w - (30 + 192 / 2) * sx
+    const cy = (30 + 192 / 2) * sy
     ctx.save()
-    // Outer ring: green when engaged (matches the live HUD accent)
     ctx.beginPath()
     ctx.arc(cx, cy, r, 0, Math.PI * 2)
-    ctx.fillStyle = engaged ? 'rgba(34, 197, 94, 1)' : 'rgba(0, 0, 0, 1)'
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.30)'
     ctx.fill()
-    ctx.beginPath()
-    ctx.arc(cx, cy, r * 0.86, 0, Math.PI * 2)
-    ctx.fillStyle = 'black'
-    ctx.fill()
-    // Quadrants: alternating blue/white roundel
-    const qr = r * 0.62
-    for (let q = 0; q < 4; q++) {
+    if (frame.lk && frame.sdEnabled) {
+      ctx.lineWidth = 12 * sx
+      ctx.strokeStyle = 'rgb(76, 175, 80)'
       ctx.beginPath()
-      ctx.moveTo(cx, cy)
-      ctx.arc(cx, cy, qr, (q * Math.PI) / 2 - Math.PI / 2, ((q + 1) * Math.PI) / 2 - Math.PI / 2)
-      ctx.closePath()
-      ctx.fillStyle = q % 2 === 0 ? 'rgba(38, 132, 255, 1)' : 'white'
-      ctx.fill()
+      ctx.arc(cx, cy, r - ctx.lineWidth / 2, 0, Math.PI * 2)
+      ctx.stroke()
+    }
+    const img = getEmblem(frame.brand, frame.exp ? 'color' : 'white')
+    if (img) {
+      // 12px gap between emblem edge and circle boundary (stock resize rule)
+      const target = size - 24 * sx
+      const scale = target / Math.max(img.naturalWidth, img.naturalHeight)
+      const iw = img.naturalWidth * scale
+      const ih = img.naturalHeight * scale
+      ctx.drawImage(img, cx - iw / 2, cy - ih / 2, iw, ih)
     }
     ctx.restore()
   }
@@ -353,10 +377,10 @@
     ctx.restore()
 
     // ── Plugin HUD elements (from bus_logger's pluginBusLog record) ──
-    drawSpeedLimitSign(ctx, sx, sy, frame.sl)
+    drawSpeedLimitSign(ctx, sx, sy, frame.sl, $isMetric)
     drawRoadInfo(ctx, w, h, sx, sy, frame.sl)
     drawTemps(ctx, w, h, sx, sy, frame.temps)
-    if (frame.temps) drawBmwEmblem(ctx, w, sx, sy, engaged)
+    drawBrandEmblem(ctx, w, sx, sy, frame)
 
     // ── Alerts (stock style: colored background bar at bottom) ──
     // alertSize: 0=none, 1=small(271px), 2=mid(420px), 3=full

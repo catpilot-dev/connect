@@ -119,6 +119,7 @@ from handlers import (
     handle_ssh_keys_set,
     handle_ssh_keys_delete,
     handle_hud_data,
+    handle_hud_emblem,
 )
 from route_store import DEFAULT_DATA_DIR, DEFAULT_PORT, RouteStore
 from screenshot_worker import screenshot_worker
@@ -242,6 +243,7 @@ def create_app(data_dir: str, static_dir: str) -> web.Application:
 
     # HUD overlay data (from qlogs — pre-projected model + telemetry)
     app.router.add_get("/v1/route/{routeName}/hud_data", handle_hud_data)
+    app.router.add_get("/v1/hud/emblem/{brand}", handle_hud_emblem)
 
     # HUD video rendering (pre-render to MP4)
     app.router.add_post("/v1/route/{routeName}/hud/prerender", handle_hud_prerender)

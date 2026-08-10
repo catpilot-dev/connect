@@ -199,11 +199,11 @@ _HUD_CACHE_MAX_SEGMENTS = 32
 HUD_DATA_CACHE_DIR = Path(COD_CACHE_DIR) / "hud_data"
 
 # Bump when the frame schema changes — mismatched disk entries re-extract.
-_CACHE_VERSION = 2
+_CACHE_VERSION = 4
 
 # Plugin-bus topics carried into overlay frames (recorded by the bus_logger
 # plugin as pluginBusLog events in the rlog).
-_BUS_TOPICS = ("speedLimitState", "bmw_temps")
+_BUS_TOPICS = ("speedLimitState", "bmw_temps", "lane_keeping")
 
 
 def _disk_cache_load(local_id: str, seg: int):
@@ -212,25 +212,26 @@ def _disk_cache_load(local_id: str, seg: int):
         try:
             d = json.loads(cache.read_text())
             if d.get("v") == _CACHE_VERSION:
-                return d["frames"], d.get("calib"), d.get("height")
+                return d["frames"], d.get("calib"), d.get("height"), d.get("brand")
         except Exception:
             pass
     return None
 
 
-def _disk_cache_store(local_id: str, seg: int, frames, calib_rpy, height):
+def _disk_cache_store(local_id: str, seg: int, frames, calib_rpy, height, brand):
     try:
         HUD_DATA_CACHE_DIR.mkdir(parents=True, exist_ok=True)
         cache = HUD_DATA_CACHE_DIR / f"{local_id}--{seg}.json"
         tmp = cache.with_suffix(".tmp")
         tmp.write_text(json.dumps({"v": _CACHE_VERSION, "frames": frames,
-                                   "calib": calib_rpy, "height": height}))
+                                   "calib": calib_rpy, "height": height,
+                                   "brand": brand}))
         tmp.rename(cache)
     except Exception as e:
         logger.debug("hud_data disk cache write failed for %s--%s: %s", local_id, seg, e)
 
 
-def _extract_hud_segment(qlog_path: str, seg_num: int, calib_rpy=None, height=None):
+def _extract_hud_segment(qlog_path: str, seg_num: int, calib_rpy=None, height=None, brand=None):
     """Extract model + telemetry frames from a single qlog segment.
 
     Returns (frames, calib_rpy, height) where frames is a list of dicts
@@ -293,6 +294,9 @@ def _extract_hud_segment(qlog_path: str, seg_num: int, calib_rpy=None, height=No
                     topic = str(e.topic)
                     if topic in _BUS_TOPICS:
                         last_bus[topic] = str(e.json)
+
+            elif w == "carParams" and brand is None:
+                brand = str(ev.carParams.brand).lower() or None
 
             elif w == "modelV2" and car_space_transform is not None:
                 if base_mono is None:
@@ -376,6 +380,7 @@ def _extract_hud_segment(qlog_path: str, seg_num: int, calib_rpy=None, height=No
                             "alertType": str(sd.alertType),
                             "alertStatus": sd.alertStatus.raw if hasattr(sd.alertStatus, 'raw') else int(sd.alertStatus),
                             "alertSize": sd.alertSize.raw if hasattr(sd.alertSize, 'raw') else int(sd.alertSize),
+                            "exp": bool(sd.experimentalMode),
                         })
 
                     # Plugin HUD elements from the bus_logger rlog record
@@ -399,6 +404,15 @@ def _extract_hud_segment(qlog_path: str, seg_num: int, calib_rpy=None, height=No
                                               "oil": int(tp.get("oil", 0))}
                         except Exception:
                             pass
+                    lk_raw = last_bus.get("lane_keeping")
+                    if lk_raw:
+                        try:
+                            # Green emblem ring = lane_keeping anchored (ui_mod)
+                            frame["lk"] = json.loads(lk_raw).get("state") == "anchor"
+                        except Exception:
+                            pass
+                    if brand:
+                        frame["brand"] = brand
 
                     frame["model"] = {
                         "laneLines": lane_polygons,
@@ -416,7 +430,13 @@ def _extract_hud_segment(qlog_path: str, seg_num: int, calib_rpy=None, height=No
     except Exception as e:
         logger.warning("HUD segment extraction error for %s: %s", qlog_path, e)
 
-    return frames, calib_rpy, height
+    # carParams can appear mid-segment (observed ~30 s in) — the brand is
+    # constant for the drive, so backfill every frame once known.
+    if brand:
+        for f in frames:
+            f.setdefault("brand", brand)
+
+    return frames, calib_rpy, height, brand
 
 
 def _extract_hud_data(store, fullname: str, start_seg: int, end_seg: int) -> list:
@@ -428,49 +448,76 @@ def _extract_hud_data(store, fullname: str, start_seg: int, end_seg: int) -> lis
     all_frames = []
     calib_rpy = None
     height = None
+    brand = None
 
-    # Seed calibration from the nearest earlier cached segment of this route,
-    # so a cold seek into segment N doesn't drop frames until liveCalibration.
+    # Seed calibration (and brand) from the nearest earlier cached segment of
+    # this route, so a cold seek into segment N doesn't drop frames until
+    # liveCalibration/carParams reappear.
     best_seg = -1
-    for (lid, s), (_frames, c, h) in _HUD_DATA_CACHE.items():
+    for (lid, s), (_frames, c, h, b) in _HUD_DATA_CACHE.items():
         if lid == local_id and s < start_seg and c is not None and s > best_seg:
-            best_seg, calib_rpy, height = s, c, h
+            best_seg, calib_rpy, height, brand = s, c, h, b
 
     for seg in range(start_seg, end_seg + 1):
         key = (local_id, seg)
         cached = _HUD_DATA_CACHE.get(key)
         if cached is not None:
             _HUD_DATA_CACHE.move_to_end(key)
-            frames, seg_calib, seg_height = cached
+            frames, seg_calib, seg_height, seg_brand = cached
             all_frames.extend(frames)
             if seg_calib is not None:
                 calib_rpy, height = seg_calib, seg_height
+            brand = seg_brand or brand
             continue
 
         disk = _disk_cache_load(local_id, seg)
         if disk is not None:
-            frames, seg_calib, seg_height = disk
+            frames, seg_calib, seg_height, seg_brand = disk
             if seg_calib is not None:
                 calib_rpy, height = seg_calib, seg_height
+            brand = seg_brand or brand
         else:
             # Use rlog (not qlog) — modelV2 at full rate is only in rlogs
             qlog = store.resolve_segment_path(fullname, seg, "rlog.zst")
             if not qlog:
                 qlog = store.resolve_segment_path(fullname, seg, "rlog")
             if qlog:
-                frames, calib_rpy, height = _extract_hud_segment(str(qlog), seg, calib_rpy, height)
+                frames, calib_rpy, height, brand = _extract_hud_segment(
+                    str(qlog), seg, calib_rpy, height, brand)
                 if frames:
-                    _disk_cache_store(local_id, seg, frames, calib_rpy, height)
+                    _disk_cache_store(local_id, seg, frames, calib_rpy, height, brand)
             else:
                 frames = []
 
-        _HUD_DATA_CACHE[key] = (frames, calib_rpy, height)
+        _HUD_DATA_CACHE[key] = (frames, calib_rpy, height, brand)
         _HUD_DATA_CACHE.move_to_end(key)
         while len(_HUD_DATA_CACHE) > _HUD_CACHE_MAX_SEGMENTS:
             _HUD_DATA_CACHE.popitem(last=False)
         all_frames.extend(frames)
 
     return all_frames
+
+
+async def handle_hud_emblem(request):
+    """GET /v1/hud/emblem/{brand}?style=color|white — brand emblem PNG.
+
+    Served from the plugins repo's logos/ (the same assets ui_mod draws
+    onroad), so the overlay emblem is pixel-identical to the real HUD.
+    """
+    import re as _re
+    from config import PLUGINS_REPO_DIR
+
+    brand = request.match_info["brand"]
+    if not _re.fullmatch(r"[a-z0-9_-]{1,32}", brand):
+        return web.json_response({"error": "invalid brand"}, status=400)
+    subdir = "emblems" if request.query.get("style", "color") == "color" else "icons"
+    path = Path(PLUGINS_REPO_DIR) / "logos" / subdir / f"{brand}.png"
+    if not path.is_file():
+        return web.json_response({"error": "not found"}, status=404)
+    return web.FileResponse(path, headers={
+        "Content-Type": "image/png",
+        "Cache-Control": "public, max-age=86400",
+    })
 
 
 async def handle_hud_data(request):
