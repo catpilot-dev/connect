@@ -11,9 +11,12 @@ import asyncio
 import json
 import logging
 from collections import OrderedDict
+from pathlib import Path
 
 import numpy as np
 from aiohttp import web
+
+from config import COD_CACHE_DIR
 
 logger = logging.getLogger("connect.hud_data")
 
@@ -146,7 +149,8 @@ def _map_line_to_polygon(transform, line_3d, y_off, z_off, max_idx, max_distance
     polygon[:, 0] /= canvas_w
     polygon[:, 1] /= canvas_h
 
-    return [[round(float(p[0]), 4), round(float(p[1]), 4)] for p in polygon]
+    # One vectorized round — a per-vertex Python loop here cost ~0.5 s/segment
+    return np.round(polygon, 4).tolist()
 
 
 def _map_point_to_screen(transform, x, y, z, canvas_w, canvas_h):
@@ -188,6 +192,33 @@ CANVAS_H = 1208.0
 # calibration instead of dropping frames until liveCalibration reappears.
 _HUD_DATA_CACHE = OrderedDict()
 _HUD_CACHE_MAX_SEGMENTS = 32
+
+# Extraction costs seconds per segment and rlogs are immutable, so results
+# also persist to disk (same pattern as the frame_times cache) — the memory
+# LRU only survives until the next server restart.
+HUD_DATA_CACHE_DIR = Path(COD_CACHE_DIR) / "hud_data"
+
+
+def _disk_cache_load(local_id: str, seg: int):
+    cache = HUD_DATA_CACHE_DIR / f"{local_id}--{seg}.json"
+    if cache.exists():
+        try:
+            d = json.loads(cache.read_text())
+            return d["frames"], d.get("calib"), d.get("height")
+        except Exception:
+            pass
+    return None
+
+
+def _disk_cache_store(local_id: str, seg: int, frames, calib_rpy, height):
+    try:
+        HUD_DATA_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        cache = HUD_DATA_CACHE_DIR / f"{local_id}--{seg}.json"
+        tmp = cache.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"frames": frames, "calib": calib_rpy, "height": height}))
+        tmp.rename(cache)
+    except Exception as e:
+        logger.debug("hud_data disk cache write failed for %s--%s: %s", local_id, seg, e)
 
 
 def _extract_hud_segment(qlog_path: str, seg_num: int, calib_rpy=None, height=None):
@@ -231,52 +262,20 @@ def _extract_hud_segment(qlog_path: str, seg_num: int, calib_rpy=None, height=No
                         path_offset_z = float(calib.height[0])
                         height = path_offset_z
 
+            # Telemetry arrives at ~100 Hz but is only read at the 5 Hz model
+            # sample points — keep the raw (lazily decoded) event and build
+            # the dict on sampling. Building it per message cost ~2 s/segment.
             elif w == "carState":
-                cs = ev.carState
-                cruise = cs.cruiseState
-                # vCruiseCluster is the cluster display value (already in km/h)
-                # cruiseState.speed is the internal value (m/s) — not what the driver sees
-                v_cruise_cluster = float(cs.vCruiseCluster)
-                last_cs = {
-                    "vEgo": round(float(cs.vEgo), 3),
-                    "vEgoCluster": round(float(cs.vEgoCluster), 3),
-                    "steeringAngleDeg": round(float(cs.steeringAngleDeg), 2),
-                    "gasPressed": bool(cs.gasPressed),
-                    "brakePressed": bool(cs.brakePressed),
-                    "cruiseSpeed": round(float(cruise.speed), 2),
-                    "cruiseEnabled": bool(cruise.enabled),
-                    "vCruiseCluster": round(v_cruise_cluster, 1),
-                }
+                last_cs = ev
 
             elif w == "carControl":
-                cc = ev.carControl
-                last_cc = {
-                    "steerCmd": round(float(cc.actuators.steeringAngleDeg), 4),
-                    "accelCmd": round(float(cc.actuators.accel), 4),
-                }
+                last_cc = ev
 
             elif w == "selfdriveState":
-                sd = ev.selfdriveState
-                last_sd = {
-                    "sdState": str(sd.state),
-                    "sdEnabled": bool(sd.enabled),
-                    "alertText1": str(sd.alertText1),
-                    "alertText2": str(sd.alertText2),
-                    "alertType": str(sd.alertType),
-                    "alertStatus": sd.alertStatus.raw if hasattr(sd.alertStatus, 'raw') else int(sd.alertStatus),
-                    "alertSize": sd.alertSize.raw if hasattr(sd.alertSize, 'raw') else int(sd.alertSize),
-                }
+                last_sd = ev
 
             elif w == "radarState":
-                rs = ev.radarState
-                if rs.leadOne and rs.leadOne.status:
-                    last_radar = {
-                        "dRel": float(rs.leadOne.dRel),
-                        "yRel": float(rs.leadOne.yRel),
-                        "vRel": float(rs.leadOne.vRel),
-                    }
-                else:
-                    last_radar = None
+                last_radar = ev
 
             elif w == "modelV2" and car_space_transform is not None:
                 if base_mono is None:
@@ -307,28 +306,60 @@ def _extract_hud_segment(qlog_path: str, seg_num: int, calib_rpy=None, height=No
 
                     edge_polygons = [_map_line_to_polygon(car_space_transform, re, 0.025, 0.0, max_idx, max_distance, CANVAS_W, CANVAS_H) for re in road_edges_3d]
 
+                    radar = None
+                    if last_radar is not None:
+                        lead = last_radar.radarState.leadOne
+                        if lead.status:
+                            radar = {"dRel": float(lead.dRel), "yRel": float(lead.yRel), "vRel": float(lead.vRel)}
+
                     path_max = max_distance
                     lead_data = None
-                    if last_radar:
-                        lead_d = last_radar["dRel"] * 2.0
+                    if radar:
+                        lead_d = radar["dRel"] * 2.0
                         path_max = float(np.clip(lead_d - min(lead_d * 0.35, 10.0), 0.0, max_distance))
-                        idx = _get_path_length_idx(path_3d[:, 0], last_radar["dRel"])
+                        idx = _get_path_length_idx(path_3d[:, 0], radar["dRel"])
                         z = float(path_3d[idx, 2]) if idx < len(path_3d) else 0.0
-                        lead_pt = _map_point_to_screen(car_space_transform, last_radar["dRel"], -last_radar["yRel"], z + path_offset_z, CANVAS_W, CANVAS_H)
+                        lead_pt = _map_point_to_screen(car_space_transform, radar["dRel"], -radar["yRel"], z + path_offset_z, CANVAS_W, CANVAS_H)
                         if lead_pt:
-                            lead_data = {"pt": lead_pt, "dRel": round(last_radar["dRel"], 1), "vRel": round(last_radar["vRel"], 1)}
+                            lead_data = {"pt": lead_pt, "dRel": round(radar["dRel"], 1), "vRel": round(radar["vRel"], 1)}
 
                     path_idx = _get_path_length_idx(path_3d[:, 0], path_max)
                     path_polygon = _map_line_to_polygon(car_space_transform, path_3d, 0.9, path_offset_z, path_idx, path_max, CANVAS_W, CANVAS_H)
 
                     frame = {"t": round(t, 2)}
 
-                    if last_cs:
-                        frame.update(last_cs)
-                    if last_cc:
-                        frame.update(last_cc)
-                    if last_sd:
-                        frame.update(last_sd)
+                    if last_cs is not None:
+                        cs = last_cs.carState
+                        cruise = cs.cruiseState
+                        frame.update({
+                            "vEgo": round(float(cs.vEgo), 3),
+                            "vEgoCluster": round(float(cs.vEgoCluster), 3),
+                            "steeringAngleDeg": round(float(cs.steeringAngleDeg), 2),
+                            "gasPressed": bool(cs.gasPressed),
+                            "brakePressed": bool(cs.brakePressed),
+                            "cruiseSpeed": round(float(cruise.speed), 2),
+                            "cruiseEnabled": bool(cruise.enabled),
+                            # vCruiseCluster is the cluster display value (km/h);
+                            # cruiseState.speed is internal m/s — not what the driver sees
+                            "vCruiseCluster": round(float(cs.vCruiseCluster), 1),
+                        })
+                    if last_cc is not None:
+                        cc = last_cc.carControl
+                        frame.update({
+                            "steerCmd": round(float(cc.actuators.steeringAngleDeg), 4),
+                            "accelCmd": round(float(cc.actuators.accel), 4),
+                        })
+                    if last_sd is not None:
+                        sd = last_sd.selfdriveState
+                        frame.update({
+                            "sdState": str(sd.state),
+                            "sdEnabled": bool(sd.enabled),
+                            "alertText1": str(sd.alertText1),
+                            "alertText2": str(sd.alertText2),
+                            "alertType": str(sd.alertType),
+                            "alertStatus": sd.alertStatus.raw if hasattr(sd.alertStatus, 'raw') else int(sd.alertStatus),
+                            "alertSize": sd.alertSize.raw if hasattr(sd.alertSize, 'raw') else int(sd.alertSize),
+                        })
 
                     frame["model"] = {
                         "laneLines": lane_polygons,
@@ -377,14 +408,22 @@ def _extract_hud_data(store, fullname: str, start_seg: int, end_seg: int) -> lis
                 calib_rpy, height = seg_calib, seg_height
             continue
 
-        # Use rlog (not qlog) — modelV2 and liveCalibration are only in rlogs
-        qlog = store.resolve_segment_path(fullname, seg, "rlog.zst")
-        if not qlog:
-            qlog = store.resolve_segment_path(fullname, seg, "rlog")
-        if qlog:
-            frames, calib_rpy, height = _extract_hud_segment(str(qlog), seg, calib_rpy, height)
+        disk = _disk_cache_load(local_id, seg)
+        if disk is not None:
+            frames, seg_calib, seg_height = disk
+            if seg_calib is not None:
+                calib_rpy, height = seg_calib, seg_height
         else:
-            frames = []
+            # Use rlog (not qlog) — modelV2 at full rate is only in rlogs
+            qlog = store.resolve_segment_path(fullname, seg, "rlog.zst")
+            if not qlog:
+                qlog = store.resolve_segment_path(fullname, seg, "rlog")
+            if qlog:
+                frames, calib_rpy, height = _extract_hud_segment(str(qlog), seg, calib_rpy, height)
+                if frames:
+                    _disk_cache_store(local_id, seg, frames, calib_rpy, height)
+            else:
+                frames = []
 
         _HUD_DATA_CACHE[key] = (frames, calib_rpy, height)
         _HUD_DATA_CACHE.move_to_end(key)

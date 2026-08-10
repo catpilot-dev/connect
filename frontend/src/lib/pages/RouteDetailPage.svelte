@@ -273,20 +273,55 @@
     hdSource = sourceId
   }
 
+  // Segments already fetched — hudLoadedRange is only a min/max envelope, so
+  // it cannot tell gaps apart once ranges merge; this can.
+  let hudLoadedSegs = new Set()
+
+  function mergeHudFrames(newFrames, start, end) {
+    const existing = new Set(hudFrames.map(f => f.t))
+    hudFrames = [...hudFrames, ...newFrames.filter(f => !existing.has(f.t))].sort((a, b) => a.t - b.t)
+    hudLoadedRange = hudLoadedRange
+      ? { start: Math.min(hudLoadedRange.start, start), end: Math.max(hudLoadedRange.end, end) }
+      : { start, end }
+    for (let s = Math.floor(start / 60); s * 60 < end; s++) hudLoadedSegs.add(s)
+  }
+
+  // Background fill of the rest of the route after the playhead window is
+  // up, two segments per request. Server caches per segment, so overlap with
+  // seek-triggered loads is cheap. Cancelled by toggle-off or route change.
+  let hudPrefetchToken = 0
+  async function prefetchRemainingHud(localId) {
+    const token = ++hudPrefetchToken
+    const totalEnd = duration || ((route.maxqlog + 1) * 60)
+    for (let s = 0; s * 60 < totalEnd; s += 2) {
+      if (!showHud || token !== hudPrefetchToken || route?.local_id !== localId) return
+      if (hudLoadedSegs.has(s) && hudLoadedSegs.has(s + 1)) continue
+      const start = s * 60
+      const end = Math.min((s + 2) * 60, totalEnd)
+      try {
+        mergeHudFrames(await fetchHudData(localId, start, end), start, end)
+      } catch { return }
+    }
+  }
+
   async function toggleHudOverlay() {
     showHud = !showHud
-    if (showHud && !hudFrames.length && route) {
-      // Load HUD data for the visible range (or full route)
+    if (!showHud) { hudPrefetchToken++; return }
+    if (!hudFrames.length && route) {
+      // The playhead locates the segment — load its ±1-segment window first
+      // so the overlay appears in seconds, then fill the rest in background.
       hudLoading = true
-      const start = selectionStart || 0
-      const end = selectionEnd > 0 ? selectionEnd : duration || ((route.maxqlog + 1) * 60)
+      const seg = Math.floor(currentTime / 60)
+      const totalEnd = duration || ((route.maxqlog + 1) * 60)
+      const start = Math.max(0, (seg - 1) * 60)
+      const end = Math.min((seg + 2) * 60, totalEnd)
       try {
-        hudFrames = await fetchHudData(route.local_id, start, end)
-        hudLoadedRange = { start, end }
+        mergeHudFrames(await fetchHudData(route.local_id, start, end), start, end)
       } catch (e) {
         console.warn('HUD data load failed:', e)
       }
       hudLoading = false
+      prefetchRemainingHud(route.local_id)
     }
   }
 
@@ -301,18 +336,7 @@
     const end = Math.min((seg + 2) * 60, (route.maxqlog + 1) * 60)
     hudLoading = true
     try {
-      const newFrames = await fetchHudData(route.local_id, start, end)
-      // Merge with existing frames, dedup by time
-      const existing = new Set(hudFrames.map(f => f.t))
-      hudFrames = [...hudFrames, ...newFrames.filter(f => !existing.has(f.t))].sort((a, b) => a.t - b.t)
-      if (hudLoadedRange) {
-        hudLoadedRange = {
-          start: Math.min(hudLoadedRange.start, start),
-          end: Math.max(hudLoadedRange.end, end),
-        }
-      } else {
-        hudLoadedRange = { start, end }
-      }
+      mergeHudFrames(await fetchHudData(route.local_id, start, end), start, end)
     } catch {}
     hudLoading = false
   }

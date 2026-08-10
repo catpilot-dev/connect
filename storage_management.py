@@ -214,6 +214,10 @@ def run_cleanup(store) -> dict:
     # ── General cache: cap MP4 muxes at 500MB, delete oldest ──────────
     _cleanup_media_cache(COD_CACHE_DIR)
 
+    # ── Per-segment JSON caches (hud_data overlay frames, frame times) ─
+    _cleanup_json_cache(os.path.join(COD_CACHE_DIR, "hud_data"), JSON_CACHE_MAX_BYTES)
+    _cleanup_json_cache(os.path.join(COD_CACHE_DIR, "frame_times"), JSON_CACHE_MAX_BYTES)
+
     if deleted:
         store._save_metadata()
 
@@ -223,6 +227,7 @@ def run_cleanup(store) -> dict:
 SCREENSHOT_MAX_BYTES = 500 * 1024 * 1024  # 500 MB cap for screenshots
 HUD_CACHE_MAX_BYTES = 500 * 1024 * 1024   # 500 MB cap for HUD renders
 MEDIA_CACHE_MAX_BYTES = 500 * 1024 * 1024 # 500 MB cap for MP4 muxes in general cache
+JSON_CACHE_MAX_BYTES = 200 * 1024 * 1024  # 200 MB cap for per-segment JSON caches
 
 
 def _cleanup_hud_cache(hud_cache_dir: str):
@@ -300,6 +305,35 @@ def _cleanup_screenshots(screenshots_dir: str):
             os.remove(path)
             total -= size
             logger.info("Cleanup: deleted screenshot %s", os.path.basename(path))
+        except OSError:
+            pass
+
+
+def _cleanup_json_cache(cache_dir: str, max_bytes: int):
+    """Delete oldest .json entries in a per-segment cache dir over the cap."""
+    if not os.path.isdir(cache_dir):
+        return
+    entries = []
+    total = 0
+    for name in os.listdir(cache_dir):
+        if not name.endswith('.json'):
+            continue
+        path = os.path.join(cache_dir, name)
+        try:
+            stat = os.stat(path)
+            entries.append((stat.st_mtime, path, stat.st_size))
+            total += stat.st_size
+        except OSError:
+            continue
+    if total <= max_bytes:
+        return
+    entries.sort()  # oldest first
+    for _, path, size in entries:
+        if total <= max_bytes:
+            break
+        try:
+            os.unlink(path)
+            total -= size
         except OSError:
             pass
 
