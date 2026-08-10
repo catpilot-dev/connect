@@ -142,8 +142,13 @@
     ctx.fillStyle = 'black'
     ctx.font = `bold ${Math.round(84 * sy)}px system-ui, -apple-system, sans-serif`
     ctx.textAlign = 'center'
-    ctx.textBaseline = 'middle'
-    ctx.fillText(String(sl.limit), cx, cy)
+    // Center the actual digit glyphs, not the font's em box — baseline
+    // 'middle' sits digits visibly high inside the circle.
+    const text = String(sl.limit)
+    const m = ctx.measureText(text)
+    const yOff = (m.actualBoundingBoxAscent - m.actualBoundingBoxDescent) / 2
+    ctx.textBaseline = 'alphabetic'
+    ctx.fillText(text, cx, cy + yOff)
     ctx.restore()
   }
 
