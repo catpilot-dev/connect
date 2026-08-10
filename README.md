@@ -7,7 +7,7 @@ A self-hosted web companion for [openpilot](https://github.com/commaai/openpilot
 COD also enables data collection workflows not possible with connect.comma.ai — scrub through video frame-by-frame, export high-resolution images with EXIF metadata, and annotate events with notes. We use this to collect speed limit sign training data for YOLO and verify OSM map contributions. Or simply bookmark moments worth remembering — wildlife sightings, scenic views, or road incidents.
 
 ![Route player with live HUD overlay](docs/cod_hud_on.png)
-*Route player with **HUD On** — the openpilot HUD overlaid live on dashcam footage, with route map and event timeline.*
+*Route player with **HUD On** — the openpilot HUD overlaid live on dashcam footage, including plugin elements (speed-limit sign, road info, temperatures, brand emblem), with route map and event timeline.*
 
 ![HUD video rendering](docs/cod_hud_download.png)
 ***HUD Download** renders the overlay into a shareable MP4 on-device, frame-exact with full plugin overlay fidelity.*
