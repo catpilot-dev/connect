@@ -198,13 +198,21 @@ _HUD_CACHE_MAX_SEGMENTS = 32
 # LRU only survives until the next server restart.
 HUD_DATA_CACHE_DIR = Path(COD_CACHE_DIR) / "hud_data"
 
+# Bump when the frame schema changes — mismatched disk entries re-extract.
+_CACHE_VERSION = 2
+
+# Plugin-bus topics carried into overlay frames (recorded by the bus_logger
+# plugin as pluginBusLog events in the rlog).
+_BUS_TOPICS = ("speedLimitState", "bmw_temps")
+
 
 def _disk_cache_load(local_id: str, seg: int):
     cache = HUD_DATA_CACHE_DIR / f"{local_id}--{seg}.json"
     if cache.exists():
         try:
             d = json.loads(cache.read_text())
-            return d["frames"], d.get("calib"), d.get("height")
+            if d.get("v") == _CACHE_VERSION:
+                return d["frames"], d.get("calib"), d.get("height")
         except Exception:
             pass
     return None
@@ -215,7 +223,8 @@ def _disk_cache_store(local_id: str, seg: int, frames, calib_rpy, height):
         HUD_DATA_CACHE_DIR.mkdir(parents=True, exist_ok=True)
         cache = HUD_DATA_CACHE_DIR / f"{local_id}--{seg}.json"
         tmp = cache.with_suffix(".tmp")
-        tmp.write_text(json.dumps({"frames": frames, "calib": calib_rpy, "height": height}))
+        tmp.write_text(json.dumps({"v": _CACHE_VERSION, "frames": frames,
+                                   "calib": calib_rpy, "height": height}))
         tmp.rename(cache)
     except Exception as e:
         logger.debug("hud_data disk cache write failed for %s--%s: %s", local_id, seg, e)
@@ -242,6 +251,7 @@ def _extract_hud_segment(qlog_path: str, seg_num: int, calib_rpy=None, height=No
     last_sd = None
     last_cc = None
     last_radar = None
+    last_bus = {}
     frame_count = 0
 
     try:
@@ -276,6 +286,13 @@ def _extract_hud_segment(qlog_path: str, seg_num: int, calib_rpy=None, height=No
 
             elif w == "radarState":
                 last_radar = ev
+
+            elif w == "pluginBusLog":
+                # Latest raw JSON per topic of interest; parsed at sample time
+                for e in ev.pluginBusLog.entries:
+                    topic = str(e.topic)
+                    if topic in _BUS_TOPICS:
+                        last_bus[topic] = str(e.json)
 
             elif w == "modelV2" and car_space_transform is not None:
                 if base_mono is None:
@@ -360,6 +377,28 @@ def _extract_hud_segment(qlog_path: str, seg_num: int, calib_rpy=None, height=No
                             "alertStatus": sd.alertStatus.raw if hasattr(sd.alertStatus, 'raw') else int(sd.alertStatus),
                             "alertSize": sd.alertSize.raw if hasattr(sd.alertSize, 'raw') else int(sd.alertSize),
                         })
+
+                    # Plugin HUD elements from the bus_logger rlog record
+                    sl_raw = last_bus.get("speedLimitState")
+                    if sl_raw:
+                        try:
+                            sl = json.loads(sl_raw)
+                            frame["sl"] = {
+                                "limit": int(sl.get("speedLimit") or 0),
+                                "confirmed": bool(sl.get("confirmed")),
+                                "wayRef": str(sl.get("wayRef") or ""),
+                                "roadName": str(sl.get("roadName") or ""),
+                            }
+                        except Exception:
+                            pass
+                    temps_raw = last_bus.get("bmw_temps")
+                    if temps_raw:
+                        try:
+                            tp = json.loads(temps_raw)
+                            frame["temps"] = {"coolant": int(tp.get("coolant", 0)),
+                                              "oil": int(tp.get("oil", 0))}
+                        except Exception:
+                            pass
 
                     frame["model"] = {
                         "laneLines": lane_polygons,

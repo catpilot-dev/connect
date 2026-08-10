@@ -104,6 +104,115 @@
     ctx.restore()
   }
 
+  // ── Plugin HUD elements (speedlimitd sign, road ref, BMW temps/emblem) ──
+  // Data comes from bus_logger's pluginBusLog record in the rlog.
+
+  function roundRectPath(ctx, x, y, rw, rh, r) {
+    ctx.beginPath()
+    if (ctx.roundRect) { ctx.roundRect(x, y, rw, rh, r); return }
+    ctx.moveTo(x + r, y)
+    ctx.arcTo(x + rw, y, x + rw, y + rh, r)
+    ctx.arcTo(x + rw, y + rh, x, y + rh, r)
+    ctx.arcTo(x, y + rh, x, y, r)
+    ctx.arcTo(x, y, x + rw, y, r)
+    ctx.closePath()
+  }
+
+  function drawSpeedLimitSign(ctx, sx, sy, sl) {
+    if (!sl?.limit) return
+    // Vienna-style sign below the MAX box; faded while unconfirmed
+    const cx = 160 * sx
+    const cy = (45 + 204 + 130) * sy
+    const r = 85 * sx
+    ctx.save()
+    ctx.globalAlpha = sl.confirmed ? 1.0 : 0.5
+    ctx.beginPath()
+    ctx.arc(cx, cy, r, 0, Math.PI * 2)
+    ctx.fillStyle = 'white'
+    ctx.fill()
+    ctx.lineWidth = r * 0.28
+    ctx.strokeStyle = 'rgba(201, 34, 49, 1)'
+    ctx.beginPath()
+    ctx.arc(cx, cy, r - ctx.lineWidth / 2, 0, Math.PI * 2)
+    ctx.stroke()
+    ctx.fillStyle = 'black'
+    ctx.font = `bold ${Math.round(r * 0.95)}px system-ui, -apple-system, sans-serif`
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    ctx.fillText(String(sl.limit), cx, cy + r * 0.05)
+    ctx.restore()
+  }
+
+  function drawRoadInfo(ctx, w, h, sx, sy, sl) {
+    const text = sl?.wayRef || sl?.roadName
+    if (!text) return
+    ctx.save()
+    ctx.font = `bold ${Math.round(52 * sy)}px system-ui, -apple-system, sans-serif`
+    const tw = ctx.measureText(text).width
+    const padX = 28 * sx
+    const rh = 76 * sy
+    const rx = w / 2 - tw / 2 - padX
+    const ry = h - rh - 34 * sy
+    roundRectPath(ctx, rx, ry, tw + padX * 2, rh, 14 * sx)
+    ctx.fillStyle = 'rgba(21, 21, 21, 0.75)'
+    ctx.fill()
+    ctx.fillStyle = 'rgba(96, 165, 250, 1)'
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    ctx.fillText(text, w / 2, ry + rh / 2)
+    ctx.restore()
+  }
+
+  function drawTemps(ctx, w, h, sx, sy, temps) {
+    if (!temps) return
+    ctx.save()
+    ctx.font = `bold ${Math.round(56 * sy)}px ui-monospace, monospace`
+    const lines = [`${temps.coolant}°C`, `${temps.oil}°C`]
+    const tw = Math.max(...lines.map(t => ctx.measureText(t).width))
+    const padX = 22 * sx
+    const lineH = 64 * sy
+    const rw = tw + padX * 2
+    const rh = lineH * 2 + 24 * sy
+    const rx = w - rw - 40 * sx
+    const ry = h - rh - 40 * sy
+    roundRectPath(ctx, rx, ry, rw, rh, 14 * sx)
+    ctx.fillStyle = 'rgba(21, 21, 21, 0.7)'
+    ctx.fill()
+    ctx.fillStyle = 'rgba(74, 222, 128, 1)'
+    ctx.textAlign = 'right'
+    ctx.textBaseline = 'middle'
+    ctx.fillText(lines[0], rx + rw - padX, ry + 12 * sy + lineH * 0.5)
+    ctx.fillText(lines[1], rx + rw - padX, ry + 12 * sy + lineH * 1.5)
+    ctx.restore()
+  }
+
+  function drawBmwEmblem(ctx, w, sx, sy, engaged) {
+    const r = 62 * sx
+    const cx = w - 60 * sx - r
+    const cy = 45 * sy + r
+    ctx.save()
+    // Outer ring: green when engaged (matches the live HUD accent)
+    ctx.beginPath()
+    ctx.arc(cx, cy, r, 0, Math.PI * 2)
+    ctx.fillStyle = engaged ? 'rgba(34, 197, 94, 1)' : 'rgba(0, 0, 0, 1)'
+    ctx.fill()
+    ctx.beginPath()
+    ctx.arc(cx, cy, r * 0.86, 0, Math.PI * 2)
+    ctx.fillStyle = 'black'
+    ctx.fill()
+    // Quadrants: alternating blue/white roundel
+    const qr = r * 0.62
+    for (let q = 0; q < 4; q++) {
+      ctx.beginPath()
+      ctx.moveTo(cx, cy)
+      ctx.arc(cx, cy, qr, (q * Math.PI) / 2 - Math.PI / 2, ((q + 1) * Math.PI) / 2 - Math.PI / 2)
+      ctx.closePath()
+      ctx.fillStyle = q % 2 === 0 ? 'rgba(38, 132, 255, 1)' : 'white'
+      ctx.fill()
+    }
+    ctx.restore()
+  }
+
   function renderFrame(frame) {
     if (!canvasEl) return
     const ctx = canvasEl.getContext('2d')
@@ -242,6 +351,12 @@
     ctx.fillStyle = 'rgba(255, 255, 255, 0.78)'
     ctx.fillText(speedUnit, w * 0.5, 290 * sy)
     ctx.restore()
+
+    // ── Plugin HUD elements (from bus_logger's pluginBusLog record) ──
+    drawSpeedLimitSign(ctx, sx, sy, frame.sl)
+    drawRoadInfo(ctx, w, h, sx, sy, frame.sl)
+    drawTemps(ctx, w, h, sx, sy, frame.temps)
+    if (frame.temps) drawBmwEmblem(ctx, w, sx, sy, engaged)
 
     // ── Alerts (stock style: colored background bar at bottom) ──
     // alertSize: 0=none, 1=small(271px), 2=mid(420px), 3=full
